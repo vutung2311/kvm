@@ -66,17 +66,21 @@ export default function PCDesktop({ isFullscreen }: { isFullscreen?: number }) {
   const mouseEvents = useMouseEvents(videoElm as React.RefObject<HTMLVideoElement>, pointerLock, touchZoom);
   const overlays = useVideoOverlays(videoStream, pointerLock, videoEffects);
 
+  const setupKeyboardEvents = keyboardEvents.setupKeyboardEvents;
+  const setupVideoEventListeners = videoStream.setupVideoEventListeners;
+  const setupMouseEvents = mouseEvents.setupMouseEvents;
+
   useEffect(() => {
-    const keyboardCleanup = keyboardEvents.setupKeyboardEvents();
-    const videoCleanup = videoStream.setupVideoEventListeners();
-    const mouseCleanup = mouseEvents.setupMouseEvents();
+    const keyboardCleanup = setupKeyboardEvents();
+    const videoCleanup = setupVideoEventListeners();
+    const mouseCleanup = setupMouseEvents();
 
     return () => {
       keyboardCleanup?.();
       videoCleanup?.();
       mouseCleanup?.();
     };
-  }, [keyboardEvents, videoStream, mouseEvents]);
+  }, [setupKeyboardEvents, setupVideoEventListeners, setupMouseEvents]);
 
   return (
     <div className=" h-full w-full flex flex-col justify-evenly overflow-hidden  bg-[#d3d3d3] dark:bg-[#1a1a1a]">

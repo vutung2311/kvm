@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 
 import  useKeyboard  from "@/hooks/useKeyboard";
 import { useHidStore, useSettingsStore, useUiStore } from "@/hooks/stores";
@@ -11,7 +11,9 @@ export const useKeyboardEvents = (
   isReinitializingGadget?: boolean
 ) => {
   const { sendKeyboardEvent, resetKeyboardState } = useKeyboard();
-  const { setIsNumLockActive, setIsCapsLockActive, setIsScrollLockActive } = useHidStore();
+  const setIsNumLockActive = useHidStore(state => state.setIsNumLockActive);
+  const setIsCapsLockActive = useHidStore(state => state.setIsCapsLockActive);
+  const setIsScrollLockActive = useHidStore(state => state.setIsScrollLockActive);
 
   const keyboardLedStateSyncAvailable = useHidStore(state => state.keyboardLedStateSyncAvailable);
   const keyboardLedSync = useSettingsStore(state => state.keyboardLedSync);
@@ -137,7 +139,7 @@ export const useKeyboardEvents = (
     return () => abortController.abort();
   }, [keyDownHandler, keyUpHandler, resetKeyboardState]);
 
-  return {
+  return useMemo(() => ({
     setupKeyboardEvents,
-  };
+  }), [setupKeyboardEvents]);
 };

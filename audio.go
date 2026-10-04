@@ -124,6 +124,7 @@ func handleAudioClient(conn net.Conn) {
 
 	audioLogger.Info().Msg("native audio socket client connected")
 	inboundPacket := make([]byte, maxAudioFrameSize)
+	outboundPacket := make([]byte, maxAudioFrameSize)
 	var timestamp uint32
 	var packet rtp.Packet
 
@@ -142,13 +143,13 @@ func handleAudioClient(conn net.Conn) {
 
 			timestamp += timestampStep
 			packet.Timestamp = timestamp
-			buf, err := packet.Marshal()
+			outLen, err := packet.MarshalTo(outboundPacket)
 			if err != nil {
 				audioLogger.Warn().Err(err).Msg("error marshalling packet")
 				continue
 			}
 
-			if _, err := currentSession.AudioTrack.Write(buf); err != nil {
+			if _, err := currentSession.AudioTrack.Write(outboundPacket[:outLen]); err != nil {
 				audioLogger.Warn().Err(err).Msg("error writing sample")
 			}
 		}

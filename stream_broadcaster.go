@@ -21,12 +21,21 @@ func (f *VideoFrame) Release() {
 	if f.refs.Add(-1) == 0 {
 		f.data = f.data[:cap(f.data)]
 		f.pool.Put(f.data)
+		f.data = nil
+		f.pool = nil
+		videoFrameStructPool.Put(f)
 	}
 }
 
 var framePool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, maxFrameSize)
+	},
+}
+
+var videoFrameStructPool = sync.Pool{
+	New: func() any {
+		return new(VideoFrame)
 	},
 }
 
@@ -100,10 +109,9 @@ func (b *VideoBroadcaster) Broadcast(data []byte) {
 	}
 	n := copy(buf, data)
 
-	frame := &VideoFrame{
-		data: buf[:n],
-		pool: &framePool,
-	}
+	frame := videoFrameStructPool.Get().(*VideoFrame)
+	frame.data = buf[:n]
+	frame.pool = &framePool
 	frame.refs.Store(int32(subscriberCount + 1))
 
 	for _, ch := range subscribers {

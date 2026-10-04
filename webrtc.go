@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"kvm/internal/logging"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/gin-gonic/gin"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/rs/zerolog"
 )
@@ -24,6 +26,20 @@ type Session struct {
 	RPCChannel               *webrtc.DataChannel
 	DiskChannel              *webrtc.DataChannel
 	shouldUmountVirtualMedia bool
+	rpcInbox                 chan webrtc.DataChannelMessage
+	closeOnce                sync.Once
+}
+
+func (s *Session) runRPCWorker() {
+	for msg := range s.rpcInbox {
+		onRPCMessage(msg, s)
+	}
+}
+
+func (s *Session) closeRPCWorker() {
+	s.closeOnce.Do(func() {
+		close(s.rpcInbox)
+	})
 }
 
 type SessionConfig struct {
@@ -121,7 +137,11 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	session := &Session{peerConnection: peerConnection}
+	session := &Session{
+		peerConnection: peerConnection,
+		rpcInbox:       make(chan webrtc.DataChannelMessage, 128),
+	}
+	go session.runRPCWorker()
 
 	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
 		scopedLogger.Info().Str("label", d.Label()).Uint16("id", *d.ID()).Msg("New DataChannel")
@@ -129,7 +149,11 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 		case "rpc":
 			session.RPCChannel = d
 			d.OnMessage(func(msg webrtc.DataChannelMessage) {
-				go onRPCMessage(msg, session)
+				select {
+				case session.rpcInbox <- msg:
+				default:
+					scopedLogger.Warn().Msg("session rpcInbox full, dropping message")
+				}
 			})
 			triggerOTAStateUpdate()
 			triggerVideoStateUpdate()
@@ -172,14 +196,24 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 		return nil, err
 	}
 
-	// Read incoming RTCP packets
-	// Before these packets are returned they are processed by interceptors. For things
-	// like NACK this needs to be called.
+	// Read incoming RTCP packets to process interceptors and handle loss recovery (PLI/FIR)
 	go func() {
 		rtcpBuf := make([]byte, 1500)
 		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+			n, _, rtcpErr := rtpSender.Read(rtcpBuf)
+			if rtcpErr != nil {
 				return
+			}
+			packets, unmarshalErr := rtcp.Unmarshal(rtcpBuf[:n])
+			if unmarshalErr != nil {
+				continue
+			}
+			for _, p := range packets {
+				switch p.(type) {
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					scopedLogger.Debug().Msg("RTCP PictureLossIndication/FIR received, requesting IDR frame")
+					_ = writeCtrlAction("request_idr")
+				}
 			}
 		}
 	}()
@@ -221,10 +255,18 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 		//state changes on closing browser tab disconnected->failed, we need to manually close it
 		if connectionState == webrtc.ICEConnectionStateFailed {
 			scopedLogger.Debug().Msg("ICE Connection State is failed, closing peerConnection")
+			if gadget != nil {
+				gadget.ReleaseAll()
+			}
+			session.closeRPCWorker()
 			_ = peerConnection.Close()
 		}
 		if connectionState == webrtc.ICEConnectionStateClosed {
 			scopedLogger.Debug().Msg("ICE Connection State is closed, unmounting virtual media")
+			if gadget != nil {
+				gadget.ReleaseAll()
+			}
+			session.closeRPCWorker()
 			if session == currentSession {
 				currentSession = nil
 			}

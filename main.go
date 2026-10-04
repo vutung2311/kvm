@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -15,6 +16,12 @@ import (
 var appCtx context.Context
 
 func Main() {
+	// Tune Go runtime for single-core embedded environment:
+	// 35 MiB memory ceiling prevents Linux OOM killer on 128 MB RAM.
+	// GOGC=80 triggers collection earlier with smaller heaps, reducing single-core pause times.
+	debug.SetMemoryLimit(35 * 1024 * 1024)
+	debug.SetGCPercent(80)
+
 	SyncConfigSD(true)
 	LoadConfig()
 	cleanupStaleLocalPackageOnStartup()

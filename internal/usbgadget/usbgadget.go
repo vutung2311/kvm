@@ -85,6 +85,10 @@ type UsbGadget struct {
 	keysDownState       KeysDownState
 	autoReleaseTimers   []autoReleaseTimer
 
+	writersOnce sync.Once
+	kbInbox     chan hidMsg
+	mouseInbox  chan hidMsg
+
 	log *zerolog.Logger
 
 	logSuppressionCounter map[string]int

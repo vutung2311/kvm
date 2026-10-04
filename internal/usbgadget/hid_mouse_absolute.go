@@ -67,6 +67,9 @@ var absoluteMouseCombinedReportDesc = []byte{
 }
 
 func (u *UsbGadget) absMouseWriteHidFile(data []byte) error {
+	u.absMouseLock.Lock()
+	defer u.absMouseLock.Unlock()
+
 	if u.absMouseHidFile == nil {
 		var err error
 		u.absMouseHidFile, err = os.OpenFile("/dev/hidg1", os.O_RDWR, 0666)
@@ -94,43 +97,48 @@ func (u *UsbGadget) absMouseWriteHidFile(data []byte) error {
 		return err
 	}
 	u.resetLogSuppressionCounter("absMouseWriteHidFile")
+	u.resetUserInputTime()
 	return nil
 }
 
 func (u *UsbGadget) AbsMouseReport(x, y int, buttons uint8) error {
-	u.absMouseLock.Lock()
-	defer u.absMouseLock.Unlock()
+	u.startWriters()
 
-	err := u.absMouseWriteHidFile([]byte{
-		1,             // Report ID 1
-		buttons,       // Buttons
-		uint8(x),      // X Low Byte
-		uint8(x >> 8), // X High Byte
-		uint8(y),      // Y Low Byte
-		uint8(y >> 8), // Y High Byte
-	})
-	if err != nil {
-		return err
+	var msg hidMsg
+	msg.kind = hidMsgAbsMouse
+	msg.data[0] = 1 // Report ID 1
+	msg.data[1] = buttons
+	msg.data[2] = uint8(x)
+	msg.data[3] = uint8(x >> 8)
+	msg.data[4] = uint8(y)
+	msg.data[5] = uint8(y >> 8)
+	msg.length = 6
+
+	select {
+	case u.mouseInbox <- msg:
+	default:
+		// Queue full, will be coalesced or drained
 	}
 
-	u.resetUserInputTime()
 	return nil
 }
 
 func (u *UsbGadget) AbsMouseWheelReport(wheelY int8) error {
-	u.absMouseLock.Lock()
-	defer u.absMouseLock.Unlock()
-
-	// Only send a report if the value is non-zero
 	if wheelY == 0 {
 		return nil
 	}
+	u.startWriters()
 
-	err := u.absMouseWriteHidFile([]byte{
-		2,            // Report ID 2
-		byte(wheelY), // Wheel Y (signed)
-	})
+	var msg hidMsg
+	msg.kind = hidMsgAbsWheel
+	msg.data[0] = 2 // Report ID 2
+	msg.data[1] = byte(wheelY)
+	msg.length = 2
 
-	u.resetUserInputTime()
-	return err
+	select {
+	case u.mouseInbox <- msg:
+	default:
+	}
+
+	return nil
 }

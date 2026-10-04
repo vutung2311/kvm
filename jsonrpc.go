@@ -1,6 +1,7 @@
 package kvm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,9 +12,11 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v4"
+	"github.com/rs/zerolog"
 	"go.bug.st/serial"
 
 	"kvm/internal/usbgadget"
@@ -53,13 +56,26 @@ type BacklightSettings struct {
 	OffAfter      int `json:"off_after"`
 }
 
+var rpcBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 func writeJSONRPCResponse(response JSONRPCResponse, session *Session) {
-	responseBytes, err := json.Marshal(response)
+	if session == nil || session.RPCChannel == nil {
+		return
+	}
+	buf := rpcBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer rpcBufferPool.Put(buf)
+
+	err := json.NewEncoder(buf).Encode(response)
 	if err != nil {
 		jsonRpcLogger.Warn().Err(err).Msg("Error marshalling JSONRPC response")
 		return
 	}
-	err = session.RPCChannel.SendText(string(responseBytes))
+	err = session.RPCChannel.SendText(strings.TrimRight(buf.String(), "\n"))
 	if err != nil {
 		jsonRpcLogger.Warn().Err(err).Msg("Error sending JSONRPC response")
 		return
@@ -67,26 +83,30 @@ func writeJSONRPCResponse(response JSONRPCResponse, session *Session) {
 }
 
 func writeJSONRPCEvent(event string, params interface{}, session *Session) {
+	if session == nil || session.RPCChannel == nil {
+		jsonRpcLogger.Info().Msg("RPC channel not available")
+		return
+	}
+	buf := rpcBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer rpcBufferPool.Put(buf)
+
 	request := JSONRPCEvent{
 		JSONRPC: "2.0",
 		Method:  event,
 		Params:  params,
 	}
-	requestBytes, err := json.Marshal(request)
+	err := json.NewEncoder(buf).Encode(request)
 	if err != nil {
 		jsonRpcLogger.Warn().Err(err).Msg("Error marshalling JSONRPC event")
 		return
 	}
-	if session == nil || session.RPCChannel == nil {
-		jsonRpcLogger.Info().Msg("RPC channel not available")
-		return
+
+	if jsonRpcLogger.GetLevel() <= zerolog.TraceLevel {
+		jsonRpcLogger.Trace().Str("event", event).Msg("sending JSONRPC event")
 	}
 
-	requestString := string(requestBytes)
-
-	jsonRpcLogger.Trace().Str("event", event).Msg("sending JSONRPC event")
-
-	err = session.RPCChannel.SendText(requestString)
+	err = session.RPCChannel.SendText(strings.TrimRight(buf.String(), "\n"))
 	if err != nil {
 		jsonRpcLogger.Warn().Err(err).Str("event", event).Msg("error sending JSONRPC event")
 		return
@@ -126,7 +146,123 @@ func DispatchRPCRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
 	}, nil
 }
 
+type fastAbsMouseRPC struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  struct {
+		X       int   `json:"x"`
+		Y       int   `json:"y"`
+		Buttons uint8 `json:"buttons"`
+	} `json:"params"`
+	ID any `json:"id,omitempty"`
+}
+
+type fastRelMouseRPC struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  struct {
+		DX      int8  `json:"dx"`
+		DY      int8  `json:"dy"`
+		Buttons uint8 `json:"buttons"`
+	} `json:"params"`
+	ID any `json:"id,omitempty"`
+}
+
+type fastWheelRPC struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  struct {
+		WheelY    int8   `json:"wheelY"`
+		MouseMode string `json:"mouseMode"`
+	} `json:"params"`
+	ID any `json:"id,omitempty"`
+}
+
+type fastKeyboardRPC struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  struct {
+		Modifier uint8   `json:"modifier"`
+		Keys     []uint8 `json:"keys"`
+	} `json:"params"`
+	ID any `json:"id,omitempty"`
+}
+
+var absMousePool = sync.Pool{
+	New: func() any { return new(fastAbsMouseRPC) },
+}
+
+var relMousePool = sync.Pool{
+	New: func() any { return new(fastRelMouseRPC) },
+}
+
+var wheelPool = sync.Pool{
+	New: func() any { return new(fastWheelRPC) },
+}
+
+var keyboardPool = sync.Pool{
+	New: func() any {
+		k := new(fastKeyboardRPC)
+		k.Params.Keys = make([]uint8, 0, 6)
+		return k
+	},
+}
+
 func onRPCMessage(message webrtc.DataChannelMessage, session *Session) {
+	// Fast-path: Check if the message is a high-frequency input event.
+	// Uses sync.Pool and single-pass decoding to completely eliminate heap allocations in hot loops.
+	if bytes.Contains(message.Data, []byte(`"absMouseReport"`)) {
+		req := absMousePool.Get().(*fastAbsMouseRPC)
+		*req = fastAbsMouseRPC{}
+		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "absMouseReport" {
+			_ = rpcAbsMouseReport(req.Params.X, req.Params.Y, req.Params.Buttons)
+			if req.ID != nil {
+				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			}
+			absMousePool.Put(req)
+			return
+		}
+		absMousePool.Put(req)
+	} else if bytes.Contains(message.Data, []byte(`"relMouseReport"`)) {
+		req := relMousePool.Get().(*fastRelMouseRPC)
+		*req = fastRelMouseRPC{}
+		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "relMouseReport" {
+			_ = rpcRelMouseReport(req.Params.DX, req.Params.DY, req.Params.Buttons)
+			if req.ID != nil {
+				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			}
+			relMousePool.Put(req)
+			return
+		}
+		relMousePool.Put(req)
+	} else if bytes.Contains(message.Data, []byte(`"wheelReport"`)) {
+		req := wheelPool.Get().(*fastWheelRPC)
+		*req = fastWheelRPC{}
+		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "wheelReport" {
+			_ = rpcWheelReport(req.Params.WheelY, req.Params.MouseMode)
+			if req.ID != nil {
+				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			}
+			wheelPool.Put(req)
+			return
+		}
+		wheelPool.Put(req)
+	} else if bytes.Contains(message.Data, []byte(`"keyboardReport"`)) {
+		req := keyboardPool.Get().(*fastKeyboardRPC)
+		keysBuf := req.Params.Keys[:0]
+		*req = fastKeyboardRPC{}
+		req.Params.Keys = keysBuf
+		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "keyboardReport" {
+			_ = rpcKeyboardReport(req.Params.Modifier, req.Params.Keys)
+			if req.ID != nil {
+				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			}
+			keyboardPool.Put(req)
+			return
+		}
+		keyboardPool.Put(req)
+	}
+
 	var request JSONRPCRequest
 	err := json.Unmarshal(message.Data, &request)
 	if err != nil {
@@ -147,12 +283,13 @@ func onRPCMessage(message webrtc.DataChannelMessage, session *Session) {
 		return
 	}
 
-	scopedLogger := jsonRpcLogger.With().
-		Str("method", request.Method).
-		Interface("params", request.Params).
-		Interface("id", request.ID).Logger()
-
-	scopedLogger.Trace().Msg("Received RPC request")
+	if jsonRpcLogger.GetLevel() <= zerolog.TraceLevel {
+		jsonRpcLogger.Trace().
+			Str("method", request.Method).
+			Interface("params", request.Params).
+			Interface("id", request.ID).
+			Msg("Received RPC request")
+	}
 
 	response, _ := DispatchRPCRequest(request)
 
@@ -160,7 +297,9 @@ func onRPCMessage(message webrtc.DataChannelMessage, session *Session) {
 		return
 	}
 
-	scopedLogger.Trace().Interface("result", response.Result).Msg("RPC handler returned")
+	if jsonRpcLogger.GetLevel() <= zerolog.TraceLevel {
+		jsonRpcLogger.Trace().Interface("result", response.Result).Msg("RPC handler returned")
+	}
 
 	writeJSONRPCResponse(response, session)
 }

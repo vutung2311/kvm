@@ -435,6 +435,14 @@ export default function MobileHome() {
     };
 
     pc.ontrack = function (event) {
+      if (event.receiver) {
+        if ('playoutDelayHint' in event.receiver) {
+          (event.receiver as any).playoutDelayHint = 0;
+        }
+        if ('jitterBufferTarget' in event.receiver) {
+          (event.receiver as any).jitterBufferTarget = 0;
+        }
+      }
       setMediaMediaStream(event.streams[0]);
     };
 

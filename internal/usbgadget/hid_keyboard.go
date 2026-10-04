@@ -445,12 +445,57 @@ func (u *UsbGadget) KeypressKeepAlive() error {
 	return nil
 }
 
-func (u *UsbGadget) KeyboardReport(modifier uint8, keys []uint8) error {
+func (u *UsbGadget) rawKeyboardWrite(data []byte) error {
 	u.keyboardLock.Lock()
 	defer u.keyboardLock.Unlock()
 
-	u.keysDownState.Modifier = modifier
-	copy(u.keysDownState.Keys[:], keys)
+	if u.keyboardHidFile == nil {
+		if err := u.openKeyboardHidFileLocked(false); err != nil {
+			return err
+		}
+	}
 
-	return u.keyboardWriteHidFileLocked(modifier, keys)
+	_, err := u.writeWithTimeout(u.keyboardHidFile, data)
+	if err != nil {
+		u.logWithSupression("keyboardWriteHidFile", 100, u.log, err, "failed to write to hidg0")
+		u.closeKeyboardHidFileLocked()
+		return err
+	}
+	u.resetLogSuppressionCounter("keyboardWriteHidFile")
+	u.resetUserInputTime()
+	return nil
+}
+
+func (u *UsbGadget) KeyboardReport(modifier uint8, keys []uint8) error {
+	u.startWriters()
+
+	var msg hidMsg
+	msg.kind = hidMsgKeyboard
+	msg.data[0] = modifier
+	msg.data[1] = 0
+	for i := 0; i < len(keys) && i < 6; i++ {
+		msg.data[2+i] = keys[i]
+	}
+	msg.length = 8
+
+	select {
+	case u.kbInbox <- msg:
+	default:
+	}
+
+	return nil
+}
+
+// ReleaseAll queues an all-zeros release report for both keyboard and mouse.
+func (u *UsbGadget) ReleaseAll() {
+	u.startWriters()
+
+	select {
+	case u.kbInbox <- hidMsg{release: true}:
+	default:
+	}
+	select {
+	case u.mouseInbox <- hidMsg{release: true}:
+	default:
+	}
 }

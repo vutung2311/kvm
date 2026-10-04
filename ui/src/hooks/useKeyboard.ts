@@ -6,7 +6,7 @@ import { useJsonRpc } from "@/hooks/useJsonRpc";
 import { keys, modifiers } from "@/keyboardMappings";
 
 export default function useKeyboard() {
-  const [send] = useJsonRpc();
+  const [, sendNotification] = useJsonRpc();
 
   const rpcDataChannel = useRTCStore(state => state.rpcDataChannel);
   const forceHttp = useSettingsStore(state => state.forceHttp);
@@ -28,20 +28,13 @@ export default function useKeyboard() {
       if (usbState !== "configured") return;
       const accModifier = modifiers.reduce((acc, val) => acc + val, 0);
 
-      // Fallback to JSON-RPC
-      send("keyboardReport", { keys, modifier: accModifier }, resp => {
-        if ("error" in resp) {
-          const msg = (resp.error.data as string) || resp.error.message || "";
-          if (msg.includes("cannot send after transport endpoint shutdown") && usbState === "configured") {
-            notifications.error("Please check if the cable and connection are stable.", { duration: 5000 });
-          }
-        }
-      });
+      // Send as one-way notification to eliminate response round-trip latency
+      sendNotification("keyboardReport", { keys, modifier: accModifier });
 
       // We do this for the info bar to display the currently pressed keys for the user
       updateActiveKeysAndModifiers({ keys: keys, modifiers: modifiers });
     },
-    [forceHttp, rpcDataChannel?.readyState, send, updateActiveKeysAndModifiers, isReinitializingGadget, usbState],
+    [forceHttp, rpcDataChannel?.readyState, sendNotification, updateActiveKeysAndModifiers, isReinitializingGadget, usbState],
   );
 
   // Send per-key press/release

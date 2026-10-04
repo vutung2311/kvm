@@ -57,6 +57,9 @@ var relativeMouseCombinedReportDesc = []byte{
 }
 
 func (u *UsbGadget) relMouseWriteHidFile(data []byte) error {
+	u.relMouseLock.Lock()
+	defer u.relMouseLock.Unlock()
+
 	if u.relMouseHidFile == nil {
 		var err error
 		u.relMouseHidFile, err = os.OpenFile("/dev/hidg2", os.O_RDWR, 0666)
@@ -85,23 +88,25 @@ func (u *UsbGadget) relMouseWriteHidFile(data []byte) error {
 		return err
 	}
 	u.resetLogSuppressionCounter("relMouseWriteHidFile")
+	u.resetUserInputTime()
 	return nil
 }
 
 func (u *UsbGadget) RelMouseReport(mx, my int8, buttons uint8, wheel int8) error {
-	u.relMouseLock.Lock()
-	defer u.relMouseLock.Unlock()
+	u.startWriters()
 
-	err := u.relMouseWriteHidFile([]byte{
-		buttons,     // Buttons
-		uint8(mx),   // X
-		uint8(my),   // Y
-		uint8(wheel), // Wheel
-	})
-	if err != nil {
-		return err
+	var msg hidMsg
+	msg.kind = hidMsgRelMouse
+	msg.data[0] = buttons
+	msg.data[1] = uint8(mx)
+	msg.data[2] = uint8(my)
+	msg.data[3] = uint8(wheel)
+	msg.length = 4
+
+	select {
+	case u.mouseInbox <- msg:
+	default:
 	}
 
-	u.resetUserInputTime()
 	return nil
 }
