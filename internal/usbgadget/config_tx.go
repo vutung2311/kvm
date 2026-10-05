@@ -396,35 +396,25 @@ func (tx *UsbGadgetTransaction) WriteUDC(mtpServer bool) {
 }
 
 func (tx *UsbGadgetTransaction) RebindUsb(ignoreUnbindError bool) {
-	unbindPath := path.Join(tx.dwc3Path, "unbind")
-	bindPath := path.Join(tx.dwc3Path, "bind")
+	udcPath := path.Join(tx.kvmGadgetPath, "UDC")
 
-	// remove the gadget from the UDC
+	// 1. Unbind the gadget from the UDC cleanly via ConfigFS
 	tx.addFileChange("udc", RequestedFileChange{
-		Path:            unbindPath,
+		Key:             "udc-unbind",
+		Path:            udcPath,
 		ExpectedState:   FileStateFileWrite,
-		ExpectedContent: []byte(tx.udc),
-		Description:     "unbind UDC",
+		ExpectedContent: []byte(""),
+		Description:     "unbind configfs UDC",
 		DependsOn:       []string{"udc"},
 		IgnoreErrors:    ignoreUnbindError,
 	})
-	// bind the gadget to the UDC
-	tx.addFileChange("udc", RequestedFileChange{
-		Path:            bindPath,
-		ExpectedState:   FileStateFileWrite,
-		ExpectedContent: []byte(tx.udc),
-		Description:     "bind UDC",
-		DependsOn:       []string{unbindPath},
-	})
-
-	// Re-bind configfs UDC after DWC3 driver binds back to ensure the gadget is active
-	udcPath := path.Join(tx.kvmGadgetPath, "UDC")
+	// 2. Re-bind the gadget to the UDC
 	tx.addFileChange("udc", RequestedFileChange{
 		Key:             "udc-rebind",
 		Path:            udcPath,
 		ExpectedState:   FileStateFileWrite,
 		ExpectedContent: []byte(tx.udc),
 		Description:     "bind configfs UDC",
-		DependsOn:       []string{bindPath},
+		DependsOn:       []string{"udc-unbind"},
 	})
 }

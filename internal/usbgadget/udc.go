@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 )
 
 func getUdcs() []string {
@@ -26,12 +27,10 @@ func getUdcs() []string {
 }
 
 func rebindUsb(udc string, ignoreUnbindError bool) error {
-	err := os.WriteFile(path.Join(dwc3Path, "unbind"), []byte(udc), 0644)
+	_ = os.WriteFile(udcPath, []byte(""), 0644)
+	time.Sleep(100 * time.Millisecond)
+	err := os.WriteFile(udcPath, []byte(udc), 0644)
 	if err != nil && !ignoreUnbindError {
-		return err
-	}
-	err = os.WriteFile(path.Join(dwc3Path, "bind"), []byte(udc), 0644)
-	if err != nil {
 		return err
 	}
 	return nil
@@ -78,7 +77,7 @@ func (u *UsbGadget) GetUsbState(enhancedDetection bool) (state string) {
 
 // IsUDCBound checks if the UDC state is bound.
 func (u *UsbGadget) IsUDCBound() (bool, error) {
-	udcFilePath := path.Join(dwc3Path, u.udc)
+	udcFilePath := path.Join("/sys/class/udc", u.udc)
 	_, err := os.Stat(udcFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -99,11 +98,7 @@ func (u *UsbGadget) BindUDC() error {
 }
 
 func (u *UsbGadget) BindUDCToDWC3() error {
-	err := os.WriteFile(path.Join(dwc3Path, "bind"), []byte(u.udc), 0644)
-	if err != nil {
-		return fmt.Errorf("error binding UDC: %w", err)
-	}
-	return nil
+	return u.BindUDC()
 }
 
 // UnbindUDC unbinds the gadget from the UDC.
@@ -116,9 +111,5 @@ func (u *UsbGadget) UnbindUDC() error {
 }
 
 func (u *UsbGadget) UnbindUDCToDWC3() error {
-	err := os.WriteFile(path.Join(dwc3Path, "unbind"), []byte(u.udc), 0644)
-	if err != nil {
-		return fmt.Errorf("error unbinding UDC: %w", err)
-	}
-	return nil
+	return u.UnbindUDC()
 }

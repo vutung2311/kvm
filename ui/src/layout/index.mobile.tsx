@@ -662,8 +662,9 @@ export default function MobileHome() {
   useEffect(() => {
     if (rpcDataChannel?.readyState !== "open") return;
     updateVideoState();
+    updateUsbState();
     updateVpnStates();
-  }, [rpcDataChannel?.readyState, updateVideoState]);
+  }, [rpcDataChannel?.readyState, updateUsbState, updateVideoState, updateVpnStates]);
 
   useEffect(() => {
     if (!forceHttp) return;

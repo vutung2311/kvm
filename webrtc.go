@@ -156,9 +156,14 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 					scopedLogger.Warn().Msg("session rpcInbox full, dropping message")
 				}
 			})
-			triggerOTAStateUpdate()
-			triggerVideoStateUpdate()
-			triggerUSBStateUpdate()
+			d.OnOpen(func() {
+				writeJSONRPCEvent("otaState", otaState, session)
+				writeJSONRPCEvent("videoInputState", lastVideoState, session)
+				writeJSONRPCEvent("usbState", usbState, session)
+				if gadget != nil {
+					writeJSONRPCEvent("keyboardLedState", gadget.GetKeyboardState(), session)
+				}
+			})
 		case "disk":
 			session.DiskChannel = d
 			d.OnMessage(onDiskMessage)

@@ -25,7 +25,6 @@ export default function useKeyboard() {
       if (!forceHttp && rpcDataChannel?.readyState !== "open") return;
       // Don't send keyboard events while reinitializing gadget
       if (isReinitializingGadget) return;
-      if (usbState !== "configured") return;
       const accModifier = modifiers.reduce((acc, val) => acc + val, 0);
 
       // Send as one-way notification to eliminate response round-trip latency
@@ -34,13 +33,13 @@ export default function useKeyboard() {
       // We do this for the info bar to display the currently pressed keys for the user
       updateActiveKeysAndModifiers({ keys: keys, modifiers: modifiers });
     },
-    [forceHttp, rpcDataChannel?.readyState, sendNotification, updateActiveKeysAndModifiers, isReinitializingGadget, usbState],
+    [forceHttp, rpcDataChannel?.readyState, sendNotification, updateActiveKeysAndModifiers, isReinitializingGadget],
   );
 
   // Send per-key press/release
   const sendKeypress = useCallback(
     (key: number, press: boolean) => {
-      if (isReinitializingGadget || usbState !== "configured") return;
+      if (isReinitializingGadget) return;
 
       // Legacy: simulate device-side key handling
       // This maintains the 6-key buffer on the frontend for legacy compatibility
@@ -48,7 +47,7 @@ export default function useKeyboard() {
       const modifier = press ? 0 : 0; // Simplified - would need proper modifier tracking
       sendKeyboardEvent(press ? [key] : [], [modifier]);
     },
-    [isReinitializingGadget, usbState, sendKeyboardEvent]
+    [isReinitializingGadget, sendKeyboardEvent]
   );
 
   const resetKeyboardState = useCallback(() => {
