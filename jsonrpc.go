@@ -64,7 +64,15 @@ var rpcBufferPool = sync.Pool{
 	},
 }
 
+var (
+	onJSONRPCResponseForTest func(response JSONRPCResponse)
+	onJSONRPCEventForTest    func(event string, params interface{})
+)
+
 func writeJSONRPCResponse(response JSONRPCResponse, session *Session) {
+	if onJSONRPCResponseForTest != nil {
+		onJSONRPCResponseForTest(response)
+	}
 	if session == nil || session.RPCChannel == nil {
 		return
 	}
@@ -85,6 +93,9 @@ func writeJSONRPCResponse(response JSONRPCResponse, session *Session) {
 }
 
 func writeJSONRPCEvent(event string, params interface{}, session *Session) {
+	if onJSONRPCEventForTest != nil {
+		onJSONRPCEventForTest(event, params)
+	}
 	if session == nil || session.RPCChannel == nil {
 		jsonRpcLogger.Info().Msg("RPC channel not available")
 		return

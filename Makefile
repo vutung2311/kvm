@@ -30,6 +30,13 @@ BIN_DIR := $(shell pwd)/bin
 
 TEST_DIRS := $(shell find . -name "*_test.go" -type f -exec dirname {} \; | sort -u)
 
+.PHONY: test
+test:
+	@echo "==> Running Go unit and architectural safety tests..."
+	go test -v -race ./...
+	@echo "==> Verifying frontend TypeScript and linting..."
+	cd ui && npx tsc --noEmit && npm run lint
+
 build_dev:
 	@echo "Building..."
 	$(GO_CMD) build \

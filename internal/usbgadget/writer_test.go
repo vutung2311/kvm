@@ -294,3 +294,134 @@ func TestMouseOutboxPopOnError(t *testing.T) {
 		t.Fatalf("expected 0 entries after pop, got %d", len(ob.entries))
 	}
 }
+
+func TestKeyboardOutboxCollapseModifierOnly(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	ob := &keyboardOutbox{now: clk}
+
+	// Press Ctrl modifier only (e.g. Ctrl key held before Ctrl+C or paste)
+	var mCtrl hidMsg
+	mCtrl.kind = hidMsgKeyboard
+	mCtrl.data = [8]byte{0x01, 0, 0, 0, 0, 0, 0, 0}
+	ob.add(mCtrl)
+
+	// Fill queue to capacity
+	for i := 1; i < keyboardOutboxMax; i++ {
+		var m hidMsg
+		m.kind = hidMsgKeyboard
+		m.data = [8]byte{0x01, 0, byte(i % 50), 0, 0, 0, 0, 0}
+		ob.add(m)
+	}
+
+	// Trigger collapse with another event
+	var mOver hidMsg
+	mOver.kind = hidMsgKeyboard
+	mOver.data = [8]byte{0, 0, 0x06, 0, 0, 0, 0, 0}
+	ob.add(mOver)
+
+	// First entry MUST be all-zero release to prevent stuck Ctrl or stuck keys
+	if len(ob.entries) != 2 {
+		t.Fatalf("expected 2 entries after collapse, got %d", len(ob.entries))
+	}
+	var zero [keyboardReportLen]byte
+	if ob.entries[0].report != zero {
+		t.Fatalf("expected all-zero release on collapse from modifier, got %v", ob.entries[0].report)
+	}
+	if ob.entries[1].report[2] != 0x06 {
+		t.Fatalf("expected second entry to be new key 0x06, got %v", ob.entries[1].report)
+	}
+}
+
+func TestKeyboardOutboxCollapseWhenClean(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	ob := &keyboardOutbox{now: clk}
+
+	// Pre-fill queue with all-zero reports (clean state)
+	var zero [keyboardReportLen]byte
+	ob.entries = append(ob.entries, kbEntry{report: zero, since: now})
+
+	// When o.last is zero, collapse shouldn't fabricate extra zeros
+	ob.collapse()
+
+	if len(ob.entries) != 0 {
+		t.Fatalf("expected 0 entries when collapsing clean state, got %d", len(ob.entries))
+	}
+	if ob.last != zero {
+		t.Fatalf("expected clean state to remain zero, got %v", ob.last)
+	}
+}
+
+func TestKeyboardOutboxZeroReportNeverSuppressedAfterActive(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	ob := &keyboardOutbox{now: clk}
+
+	// 1. Press 'A'
+	ob.add(hidMsg{kind: hidMsgKeyboard, data: [8]byte{0, 0, 0x04, 0, 0, 0, 0, 0}})
+	// 2. Release 'A' (all zeros)
+	ob.add(hidMsg{kind: hidMsgKeyboard, data: [8]byte{0, 0, 0, 0, 0, 0, 0, 0}})
+	// 3. Second zero report (e.g. from cleanup handler)
+	ob.add(hidMsg{kind: hidMsgKeyboard, data: [8]byte{0, 0, 0, 0, 0, 0, 0, 0}})
+
+	// Expect exactly 2 entries: Press 'A' and first Release. The duplicate release is deduplicated.
+	if len(ob.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(ob.entries))
+	}
+	if ob.entries[0].report[2] != 0x04 {
+		t.Errorf("expected entry 0 to be key 0x04")
+	}
+	var zero [keyboardReportLen]byte
+	if ob.entries[1].report != zero {
+		t.Errorf("expected entry 1 to be zero release report, got %v", ob.entries[1].report)
+	}
+}
+
+func TestMouseOutboxDragPreservesButtons(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	ob := &mouseOutbox{now: clk}
+
+	// Press mouse button 1 (drag start) at (10, 20)
+	ob.add(hidMsg{kind: hidMsgAbsMouse, data: [8]byte{1, 1, 10, 0, 20, 0, 0, 0}})
+
+	// Send 30 rapid mouse moves while dragging (button 1 remains held)
+	for i := int16(1); i <= 30; i++ {
+		x := 10 + i*5
+		y := 20 + i*5
+		ob.add(hidMsg{
+			kind: hidMsgAbsMouse,
+			data: [8]byte{1, 1, byte(x & 0xFF), byte((x >> 8) & 0xFF), byte(y & 0xFF), byte((y >> 8) & 0xFF), 0, 0},
+		})
+	}
+
+	// All moves with same button should coalesce into 1 entry
+	if len(ob.entries) != 1 {
+		t.Fatalf("expected 1 coalesced drag entry, got %d", len(ob.entries))
+	}
+	last := ob.entries[0]
+	if last.buttons != 1 {
+		t.Fatalf("expected buttons=1 during drag, got %d", last.buttons)
+	}
+	expectedX := 10 + 30*5
+	expectedY := 20 + 30*5
+	if last.x != expectedX || last.y != expectedY {
+		t.Fatalf("expected latest position (%d, %d), got (%d, %d)", expectedX, expectedY, last.x, last.y)
+	}
+
+	// Release button (drag end)
+	ob.add(hidMsg{
+		kind: hidMsgAbsMouse,
+		data: [8]byte{1, 0, byte(expectedX & 0xFF), byte((expectedX >> 8) & 0xFF), byte(expectedY & 0xFF), byte((expectedY >> 8) & 0xFF), 0, 0},
+	})
+
+	// Button change must create second distinct entry
+	if len(ob.entries) != 2 {
+		t.Fatalf("expected 2 entries after drag release, got %d", len(ob.entries))
+	}
+	if ob.entries[1].buttons != 0 {
+		t.Fatalf("expected buttons=0 on release, got %d", ob.entries[1].buttons)
+	}
+}
+

@@ -157,12 +157,7 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 				}
 			})
 			d.OnOpen(func() {
-				writeJSONRPCEvent("otaState", otaState, session)
-				writeJSONRPCEvent("videoInputState", lastVideoState, session)
-				writeJSONRPCEvent("usbState", usbState, session)
-				if gadget != nil {
-					writeJSONRPCEvent("keyboardLedState", gadget.GetKeyboardState(), session)
-				}
+				handleRPCChannelOpen(session)
 			})
 		case "disk":
 			session.DiskChannel = d
@@ -340,3 +335,11 @@ func onLastSessionDisconnected() {
 	stopVideoTimerLock.Unlock()
 }
 
+func handleRPCChannelOpen(session *Session) {
+	writeJSONRPCEvent("otaState", otaState, session)
+	writeJSONRPCEvent("videoInputState", lastVideoState, session)
+	writeJSONRPCEvent("usbState", usbState, session)
+	if gadget != nil {
+		writeJSONRPCEvent("keyboardLedState", gadget.GetKeyboardState(), session)
+	}
+}

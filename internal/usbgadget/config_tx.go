@@ -18,7 +18,6 @@ type UsbGadgetTransaction struct {
 	// below are the fields that are needed to be set by the caller
 	log                       *zerolog.Logger
 	udc                       string
-	dwc3Path                  string
 	kvmGadgetPath             string
 	configC1Path              string
 	orderedConfigItems        orderedGadgetConfigItems
@@ -41,7 +40,6 @@ func (u *UsbGadget) newUsbGadgetTransaction(lock bool) error {
 		c:                         &ChangeSet{},
 		log:                       u.log,
 		udc:                       u.udc,
-		dwc3Path:                  dwc3Path,
 		kvmGadgetPath:             u.kvmGadgetPath,
 		configC1Path:              u.configC1Path,
 		orderedConfigItems:        u.getOrderedConfigItems(),

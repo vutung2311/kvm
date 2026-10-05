@@ -14,7 +14,6 @@ export default function useKeyboard() {
     state => state.updateActiveKeysAndModifiers,
   );
   const isReinitializingGadget = useHidStore(state => state.isReinitializingGadget);
-  const usbState = useHidStore(state => state.usbState);
 
   // Track held keys for keepalive
   const heldKeysRef = useRef<Set<number>>(new Set());
