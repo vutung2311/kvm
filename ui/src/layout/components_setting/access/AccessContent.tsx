@@ -173,6 +173,7 @@ export default function SettingsAccessIndex() {
 function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => void }) {
   const { $at }= useReactAt();
   const loaderData = useLoaderData() as LocalDevice | null;
+  const authMode = loaderData?.authMode || "password";
   const { setModalView } = useLocalAuthModalStore();
   const [send] = useJsonRpc();
 
@@ -812,6 +813,10 @@ function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => vo
       if (pending <= 0) setDataLoaded(true);
     };
 
+    const safetyTimer = setTimeout(() => {
+      setDataLoaded(true);
+    }, 3500);
+
     send("getTLSState", {}, resp => {
       if ("error" in resp) {
         console.error(resp.error);
@@ -832,6 +837,10 @@ function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => vo
       }
       checkDone();
     });
+
+    return () => {
+      clearTimeout(safetyTimer);
+    };
   }, [send]);
 
   const getVpnAutoStartStatus = useCallback(() => {
@@ -1635,7 +1644,7 @@ function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => vo
         description={$at("Manage the Access Control of the device")}
       />
 
-      {loaderData?.authMode && (
+      {authMode && (
         <>
           <div className="space-y-4">
             <SettingsSectionHeader
@@ -1706,9 +1715,9 @@ function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => vo
 
               <SettingsItem
                 title={$at("Authentication Mode")}
-                description={`${$at("Current mode:")} ${loaderData.authMode === "password" ? $at("Password protected") : $at("No password")}`}
+                description={`${$at("Current mode:")} ${authMode === "password" ? $at("Password protected") : $at("No password")}`}
               >
-                {loaderData.authMode === "password" ? (
+                {authMode === "password" ? (
                   <AntdButton
                     type="primary"
                     onClick={() => {
@@ -1730,7 +1739,7 @@ function AccessContent({ setOpenDialog }: { setOpenDialog: (open: boolean) => vo
               </SettingsItem>
             </>
 
-            {loaderData.authMode === "password" && (
+            {authMode === "password" && (
               <SettingsItem
                 title={$at("Change Password")}
                 description={$at("Update your device access password")}

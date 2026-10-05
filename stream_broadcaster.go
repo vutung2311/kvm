@@ -7,10 +7,14 @@ import (
 	"github.com/google/uuid"
 )
 
+type FrameBuffer struct {
+	data []byte
+}
+
 type VideoFrame struct {
+	fb   *FrameBuffer
 	data []byte
 	refs atomic.Int32
-	pool *sync.Pool
 }
 
 func (f *VideoFrame) Data() []byte {
@@ -19,17 +23,18 @@ func (f *VideoFrame) Data() []byte {
 
 func (f *VideoFrame) Release() {
 	if f.refs.Add(-1) == 0 {
-		f.data = f.data[:cap(f.data)]
-		f.pool.Put(f.data)
+		if f.fb != nil {
+			framePool.Put(f.fb)
+			f.fb = nil
+		}
 		f.data = nil
-		f.pool = nil
 		videoFrameStructPool.Put(f)
 	}
 }
 
 var framePool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, maxFrameSize)
+	New: func() any {
+		return &FrameBuffer{data: make([]byte, maxFrameSize)}
 	},
 }
 
@@ -103,15 +108,15 @@ func (b *VideoBroadcaster) Broadcast(data []byte) {
 		return
 	}
 
-	buf := framePool.Get().([]byte)
-	if cap(buf) < len(data) {
-		buf = make([]byte, len(data))
+	fb := framePool.Get().(*FrameBuffer)
+	if cap(fb.data) < len(data) {
+		fb.data = make([]byte, len(data))
 	}
-	n := copy(buf, data)
+	n := copy(fb.data, data)
 
 	frame := videoFrameStructPool.Get().(*VideoFrame)
-	frame.data = buf[:n]
-	frame.pool = &framePool
+	frame.fb = fb
+	frame.data = fb.data[:n]
 	frame.refs.Store(int32(subscriberCount + 1))
 
 	for _, ch := range subscribers {

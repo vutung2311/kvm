@@ -9,7 +9,7 @@ import (
 const (
 	keyboardReportLen  = 8
 	keyboardStaleAfter = 3 * time.Second
-	keyboardOutboxMax  = 256
+	keyboardOutboxMax  = 1024
 )
 
 type kbEntry struct {
@@ -67,12 +67,15 @@ func (o *keyboardOutbox) collapse() {
 	if n == 0 {
 		return
 	}
-	for i := 0; i < n-1; i++ {
+	for i := 0; i < n; i++ {
 		notifyDone(o.entries[i].done, ErrReportStale)
 	}
-	keep := o.entries[n-1]
-	keep.since = o.now()
-	o.entries = append(o.entries[:0], keep)
+	o.entries = o.entries[:0]
+	var zero [keyboardReportLen]byte
+	if o.last != zero {
+		o.entries = append(o.entries, kbEntry{report: zero, since: o.now()})
+		o.last = zero
+	}
 }
 
 func (o *keyboardOutbox) dropStale() {
@@ -89,6 +92,15 @@ func (o *keyboardOutbox) dropStale() {
 	case firstFresh == 0:
 		return
 	case firstFresh == len(o.entries):
+		var zero [keyboardReportLen]byte
+		if o.last != zero {
+			for i := range o.entries {
+				notifyDone(o.entries[i].done, ErrReportStale)
+			}
+			o.entries = o.entries[:0]
+			o.append(zero, nil)
+			return
+		}
 		o.collapse()
 	default:
 		for i := 0; i < firstFresh; i++ {
@@ -116,8 +128,8 @@ func (o *keyboardOutbox) flush(u *UsbGadget) error {
 		e := &o.entries[0]
 		err := u.rawKeyboardWrite(e.report[:])
 		if err != nil {
+			o.pop(err)
 			if errors.Is(err, fs.ErrNotExist) {
-				o.pop(err)
 				continue
 			}
 			return err

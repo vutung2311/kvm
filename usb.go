@@ -215,7 +215,7 @@ func checkUSBState() {
 	usbState = newState
 
 	usbLogger.Info().Str("from", usbState).Str("to", newState).Msg("USB state changed")
-	requestDisplayUpdate(true)
+	requestDisplayUpdate()
 	triggerUSBStateUpdate()
 }
 
@@ -269,6 +269,9 @@ func rpcReinitializeUsbGadget() error {
 		config.UsbConfig,
 		usbLogger,
 	)
+	if err := gadget.Init(); err != nil {
+		usbLogger.Error().Err(err).Msg("failed to init USB gadget during reinit")
+	}
 
 	// Reapply callbacks
 	gadget.SetOnKeyboardStateChange(func(state usbgadget.KeyboardState) {

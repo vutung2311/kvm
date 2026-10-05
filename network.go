@@ -42,7 +42,7 @@ func applyProxyEnvironment(networkConfig *network.NetworkConfig) {
 
 func networkStateChanged() {
 	// do not block the main thread
-	go waitCtrlAndRequestDisplayUpdate(true)
+	go waitCtrlAndRequestDisplayUpdate()
 
 	// always restart mDNS when the network state changes
 	if mDNS != nil {

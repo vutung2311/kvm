@@ -146,6 +146,7 @@ func findInputEventDeviceByName(deviceName string) (string, error) {
 }
 
 func watchAdcKeysLongPressReset(ctx context.Context) {
+	var notFoundOnce sync.Once
 	for {
 		select {
 		case <-ctx.Done():
@@ -155,9 +156,15 @@ func watchAdcKeysLongPressReset(ctx context.Context) {
 
 		dev, err := findInputEventDeviceByName("adc-keys")
 		if err != nil {
-			keysLogger.Warn().Err(err).Msg("adc-keys device not found")
-			time.Sleep(2 * time.Second)
-			continue
+			notFoundOnce.Do(func() {
+				keysLogger.Debug().Err(err).Msg("adc-keys device not found on hardware")
+			})
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+				continue
+			}
 		}
 
 		f, err := os.OpenFile(dev, os.O_RDONLY, 0)

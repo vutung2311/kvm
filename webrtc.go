@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
 	"kvm/internal/logging"
 
@@ -139,7 +140,7 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 	}
 	session := &Session{
 		peerConnection: peerConnection,
-		rpcInbox:       make(chan webrtc.DataChannelMessage, 128),
+		rpcInbox:       make(chan webrtc.DataChannelMessage, 1024),
 	}
 	go session.runRPCWorker()
 
@@ -250,6 +251,12 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 				if actionSessions == 1 {
 					onFirstSessionConnected()
 				}
+				// Immediately request an IDR frame so newly connected WebRTC client receives a keyframe without delay
+				_ = writeCtrlAction("request_idr")
+				go func() {
+					time.Sleep(200 * time.Millisecond)
+					_ = writeCtrlAction("request_idr")
+				}()
 			}
 		}
 		//state changes on closing browser tab disconnected->failed, we need to manually close it
@@ -287,13 +294,24 @@ func newSession(sessionConfig SessionConfig) (*Session, error) {
 	return session, nil
 }
 
-var actionSessions = 0
+var (
+	actionSessions      = 0
+	stopVideoTimer      *time.Timer
+	stopVideoTimerLock  sync.Mutex
+)
 
 func onActiveSessionsChanged() {
-	requestDisplayUpdate(true)
+	requestDisplayUpdate()
 }
 
 func onFirstSessionConnected() {
+	stopVideoTimerLock.Lock()
+	if stopVideoTimer != nil {
+		stopVideoTimer.Stop()
+		stopVideoTimer = nil
+	}
+	stopVideoTimerLock.Unlock()
+
 	_ = writeCtrlAction("start_video")
 	if config.AudioMode != "disabled" {
 		StartNtpAudioServer(handleAudioClient)
@@ -301,6 +319,19 @@ func onFirstSessionConnected() {
 }
 
 func onLastSessionDisconnected() {
-	_ = writeCtrlAction("stop_video")
-	StopNtpAudioServer()
+	stopVideoTimerLock.Lock()
+	if stopVideoTimer != nil {
+		stopVideoTimer.Stop()
+	}
+	// Grace period to avoid tearing down the video encoder during page reload or rapid reconnection
+	stopVideoTimer = time.AfterFunc(3*time.Second, func() {
+		stopVideoTimerLock.Lock()
+		defer stopVideoTimerLock.Unlock()
+		if actionSessions == 0 && videoBroadcaster.count.Load() == 0 {
+			_ = writeCtrlAction("stop_video")
+			StopNtpAudioServer()
+		}
+	})
+	stopVideoTimerLock.Unlock()
 }
+

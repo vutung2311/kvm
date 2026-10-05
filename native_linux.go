@@ -4,6 +4,7 @@ package kvm
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -27,6 +28,7 @@ func (w *nativeOutput) Write(p []byte) (n int, err error) {
 func startVideoBinary(binaryPath string) (*exec.Cmd, error) {
 	// Run the binary inthe background
 	cmd := exec.Command(binaryPath)
+	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/oem/usr/lib:/oem/lib:/usr/lib:/lib:"+os.Getenv("LD_LIBRARY_PATH"))
 
 	vidoeOutputLock := sync.Mutex{}
 	videoStdout := &nativeOutput{
@@ -123,6 +125,7 @@ func startVpnBinary(binaryPath string) (*exec.Cmd, error) {
 func startDisplayBinary(binaryPath string) (*exec.Cmd, error) {
 	// Run the binary inthe background
 	cmd := exec.Command(binaryPath)
+	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/oem/usr/lib:/oem/lib:/usr/lib:/lib:"+os.Getenv("LD_LIBRARY_PATH"))
 
 	displayOutputLock := sync.Mutex{}
 	displayStdout := &nativeOutput{

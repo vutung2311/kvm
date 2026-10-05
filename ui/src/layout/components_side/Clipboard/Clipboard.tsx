@@ -35,7 +35,7 @@ export default function Clipboard() {
   const isReinitializingGadget = useHidStore(state => state.isReinitializingGadget);
   const videoWidth = useVideoStore(state => state.width);
   const videoHeight = useVideoStore(state => state.height);
-  const [send] = useJsonRpc();
+  const [send, sendNotification] = useJsonRpc();
   const rpcDataChannel = useRTCStore(state => state.rpcDataChannel);
 
   const [invalidChars, setInvalidChars] = useState<string[]>([]);
@@ -96,6 +96,9 @@ export default function Clipboard() {
     if (!chars[safeKeyboardLayout]) return;
     const text = TextAreaRef.current.value;
 
+    sendNotification("keyboardReport", hidKeyboardPayload([], 0));
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+
     try {
       for (const char of text) {
         const mapping = chars[safeKeyboardLayout][char];
@@ -116,26 +119,19 @@ export default function Clipboard() {
         }
 
         for (const [index, kei] of keyz.entries()) {
-          await new Promise<void>((resolve, reject) => {
-            send(
-              "keyboardReport",
-              hidKeyboardPayload([kei], modz[index]),
-              params => {
-                if ("error" in params) return reject(params.error);
-                send("keyboardReport", hidKeyboardPayload([], 0), params => {
-                  if ("error" in params) return reject(params.error);
-                  resolve();
-                });
-              },
-            );
-          });
+          sendNotification("keyboardReport", hidKeyboardPayload([kei], modz[index]));
+          await new Promise<void>(resolve => setTimeout(resolve, 12));
+          sendNotification("keyboardReport", hidKeyboardPayload([], 0));
+          await new Promise<void>(resolve => setTimeout(resolve, 12));
         }
       }
     } catch (error) {
       console.error(error);
-      notifications.error("tt");
+      notifications.error("Failed to paste text");
+    } finally {
+      sendNotification("keyboardReport", hidKeyboardPayload([], 0));
     }
-  }, [rpcDataChannel?.readyState, send, setDisableVideoFocusTrap, setPasteMode, safeKeyboardLayout]);
+  }, [rpcDataChannel?.readyState, sendNotification, setDisableVideoFocusTrap, setPasteMode, isReinitializingGadget, safeKeyboardLayout]);
 
   const handleTextSend = useCallback(async (text: string) => {
     const segInvalid = [
@@ -149,6 +145,9 @@ export default function Clipboard() {
     setInvalidChars(segInvalid);
     if (segInvalid.length === 0) {
       if (rpcDataChannel?.readyState !== "open" || isReinitializingGadget) return;
+      sendNotification("keyboardReport", hidKeyboardPayload([], 0));
+      await new Promise<void>(resolve => setTimeout(resolve, 10));
+
       try {
         for (const char of text) {
           const mapping = chars[safeKeyboardLayout][char];
@@ -168,29 +167,22 @@ export default function Clipboard() {
           }
 
           for (const [index, kei] of keyz.entries()) {
-            await new Promise<void>((resolve, reject) => {
-              send(
-                "keyboardReport",
-                hidKeyboardPayload([kei], modz[index]),
-                params => {
-                  if ("error" in params) return reject(params.error);
-                  send("keyboardReport", hidKeyboardPayload([], 0), params => {
-                    if ("error" in params) return reject(params.error);
-                    resolve();
-                  });
-                },
-              );
-            });
+            sendNotification("keyboardReport", hidKeyboardPayload([kei], modz[index]));
+            await new Promise<void>(resolve => setTimeout(resolve, 12));
+            sendNotification("keyboardReport", hidKeyboardPayload([], 0));
+            await new Promise<void>(resolve => setTimeout(resolve, 12));
           }
         }
         notifications.success(`Pasted: "${text}"`);
       } catch (error) {
         notifications.error("Failed to paste text");
+      } finally {
+        sendNotification("keyboardReport", hidKeyboardPayload([], 0));
       }
     } else {
       notifications.error(`Invalid characters: ${segInvalid.join(", ")}`);
     }
-  }, [safeKeyboardLayout, rpcDataChannel?.readyState, isReinitializingGadget, send]);
+  }, [safeKeyboardLayout, rpcDataChannel?.readyState, isReinitializingGadget, sendNotification]);
 
   const readClipboardToBufferAndSend = useCallback(async () => {
     try {

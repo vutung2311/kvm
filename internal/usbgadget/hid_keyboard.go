@@ -286,6 +286,15 @@ func (u *UsbGadget) keyboardWriteHidFileLocked(modifier byte, keys []byte) error
 
 	data := []byte{modifier, 0, keys[0], keys[1], keys[2], keys[3], keys[4], keys[5]}
 
+	if u.keyboardHidFile != nil {
+		if stat, err := u.keyboardHidFile.Stat(); err != nil {
+			u.closeKeyboardHidFileLocked()
+		} else if currentStat, err := os.Stat("/dev/hidg0"); err == nil && !os.SameFile(stat, currentStat) {
+			u.log.Warn().Msg("/dev/hidg0 inode changed, reopening")
+			u.closeKeyboardHidFileLocked()
+		}
+	}
+
 	if u.keyboardHidFile == nil {
 		if err := u.openKeyboardHidFileLocked(false); err != nil {
 			return err

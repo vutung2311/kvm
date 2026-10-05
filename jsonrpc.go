@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -147,45 +149,32 @@ func DispatchRPCRequest(request JSONRPCRequest) (JSONRPCResponse, error) {
 }
 
 type fastAbsMouseRPC struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  struct {
+	Params struct {
 		X       int   `json:"x"`
 		Y       int   `json:"y"`
 		Buttons uint8 `json:"buttons"`
 	} `json:"params"`
-	ID any `json:"id,omitempty"`
 }
 
 type fastRelMouseRPC struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  struct {
+	Params struct {
 		DX      int8  `json:"dx"`
 		DY      int8  `json:"dy"`
 		Buttons uint8 `json:"buttons"`
 	} `json:"params"`
-	ID any `json:"id,omitempty"`
 }
 
 type fastWheelRPC struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  struct {
-		WheelY    int8   `json:"wheelY"`
-		MouseMode string `json:"mouseMode"`
+	Params struct {
+		WheelY int8 `json:"wheelY"`
 	} `json:"params"`
-	ID any `json:"id,omitempty"`
 }
 
 type fastKeyboardRPC struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  struct {
-		Modifier uint8   `json:"modifier"`
-		Keys     []uint8 `json:"keys"`
+	Params struct {
+		Modifier uint8    `json:"modifier"`
+		Keys     [6]uint8 `json:"keys"`
 	} `json:"params"`
-	ID any `json:"id,omitempty"`
 }
 
 var absMousePool = sync.Pool{
@@ -201,61 +190,84 @@ var wheelPool = sync.Pool{
 }
 
 var keyboardPool = sync.Pool{
-	New: func() any {
-		k := new(fastKeyboardRPC)
-		k.Params.Keys = make([]uint8, 0, 6)
-		return k
-	},
+	New: func() any { return new(fastKeyboardRPC) },
 }
+
+type fastIDRPC struct {
+	ID any `json:"id"`
+}
+
+var (
+	absMouseMethodBytes = []byte(`"absMouseReport"`)
+	relMouseMethodBytes = []byte(`"relMouseReport"`)
+	wheelMethodBytes    = []byte(`"wheelReport"`)
+	keyboardMethodBytes = []byte(`"keyboardReport"`)
+	relativeModeBytes   = []byte(`"relative"`)
+	idKeyBytes          = []byte(`"id"`)
+)
 
 func onRPCMessage(message webrtc.DataChannelMessage, session *Session) {
 	// Fast-path: Check if the message is a high-frequency input event.
 	// Uses sync.Pool and single-pass decoding to completely eliminate heap allocations in hot loops.
-	if bytes.Contains(message.Data, []byte(`"absMouseReport"`)) {
+	if bytes.Contains(message.Data, absMouseMethodBytes) {
 		req := absMousePool.Get().(*fastAbsMouseRPC)
 		*req = fastAbsMouseRPC{}
-		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "absMouseReport" {
+		if err := json.Unmarshal(message.Data, req); err == nil {
 			_ = rpcAbsMouseReport(req.Params.X, req.Params.Y, req.Params.Buttons)
-			if req.ID != nil {
-				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			if bytes.Contains(message.Data, idKeyBytes) && session != nil {
+				var idReq fastIDRPC
+				if json.Unmarshal(message.Data, &idReq) == nil && idReq.ID != nil {
+					writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: true, ID: idReq.ID}, session)
+				}
 			}
 			absMousePool.Put(req)
 			return
 		}
 		absMousePool.Put(req)
-	} else if bytes.Contains(message.Data, []byte(`"relMouseReport"`)) {
+	} else if bytes.Contains(message.Data, relMouseMethodBytes) {
 		req := relMousePool.Get().(*fastRelMouseRPC)
 		*req = fastRelMouseRPC{}
-		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "relMouseReport" {
+		if err := json.Unmarshal(message.Data, req); err == nil {
 			_ = rpcRelMouseReport(req.Params.DX, req.Params.DY, req.Params.Buttons)
-			if req.ID != nil {
-				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+			if bytes.Contains(message.Data, idKeyBytes) && session != nil {
+				var idReq fastIDRPC
+				if json.Unmarshal(message.Data, &idReq) == nil && idReq.ID != nil {
+					writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: true, ID: idReq.ID}, session)
+				}
 			}
 			relMousePool.Put(req)
 			return
 		}
 		relMousePool.Put(req)
-	} else if bytes.Contains(message.Data, []byte(`"wheelReport"`)) {
+	} else if bytes.Contains(message.Data, wheelMethodBytes) {
 		req := wheelPool.Get().(*fastWheelRPC)
 		*req = fastWheelRPC{}
-		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "wheelReport" {
-			_ = rpcWheelReport(req.Params.WheelY, req.Params.MouseMode)
-			if req.ID != nil {
-				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+		if err := json.Unmarshal(message.Data, req); err == nil {
+			mode := "abs"
+			if bytes.Contains(message.Data, relativeModeBytes) {
+				mode = "relative"
+			}
+			_ = rpcWheelReport(req.Params.WheelY, mode)
+			if bytes.Contains(message.Data, idKeyBytes) && session != nil {
+				var idReq fastIDRPC
+				if json.Unmarshal(message.Data, &idReq) == nil && idReq.ID != nil {
+					writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: true, ID: idReq.ID}, session)
+				}
 			}
 			wheelPool.Put(req)
 			return
 		}
 		wheelPool.Put(req)
-	} else if bytes.Contains(message.Data, []byte(`"keyboardReport"`)) {
+	} else if bytes.Contains(message.Data, keyboardMethodBytes) {
 		req := keyboardPool.Get().(*fastKeyboardRPC)
-		keysBuf := req.Params.Keys[:0]
 		*req = fastKeyboardRPC{}
-		req.Params.Keys = keysBuf
-		if err := json.Unmarshal(message.Data, req); err == nil && req.Method == "keyboardReport" {
-			_ = rpcKeyboardReport(req.Params.Modifier, req.Params.Keys)
-			if req.ID != nil {
-				writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: nil, ID: req.ID}, session)
+		if err := json.Unmarshal(message.Data, req); err == nil {
+			_ = rpcKeyboardReport(req.Params.Modifier, req.Params.Keys[:])
+			if bytes.Contains(message.Data, idKeyBytes) && session != nil {
+				var idReq fastIDRPC
+				if json.Unmarshal(message.Data, &idReq) == nil && idReq.ID != nil {
+					writeJSONRPCResponse(JSONRPCResponse{JSONRPC: "2.0", Result: true, ID: idReq.ID}, session)
+				}
 			}
 			keyboardPool.Put(req)
 			return
@@ -263,6 +275,70 @@ func onRPCMessage(message webrtc.DataChannelMessage, session *Session) {
 		keyboardPool.Put(req)
 	}
 
+	globalRPCWorkerPool.submit(rpcTask{message: message, session: session})
+}
+
+type rpcTask struct {
+	message webrtc.DataChannelMessage
+	session *Session
+}
+
+type rpcWorkerPool struct {
+	tasks    chan rpcTask
+	workers  int
+	idleTick *time.Timer
+	idleMu   sync.Mutex
+	busy     int32
+}
+
+func newRPCWorkerPool(numWorkers, queueSize int) *rpcWorkerPool {
+	p := &rpcWorkerPool{
+		tasks:   make(chan rpcTask, queueSize),
+		workers: numWorkers,
+	}
+	for i := 0; i < numWorkers; i++ {
+		go p.workerLoop()
+	}
+	return p
+}
+
+func (p *rpcWorkerPool) submit(task rpcTask) {
+	select {
+	case p.tasks <- task:
+	default:
+		jsonRpcLogger.Warn().Msg("RPC worker pool queue full, dropping request")
+	}
+}
+
+func (p *rpcWorkerPool) workerLoop() {
+	for task := range p.tasks {
+		atomic.AddInt32(&p.busy, 1)
+		handleGeneralRPCRequest(task.message, task.session)
+		atomic.AddInt32(&p.busy, -1)
+		p.scheduleControlledGC()
+	}
+}
+
+func (p *rpcWorkerPool) scheduleControlledGC() {
+	p.idleMu.Lock()
+	defer p.idleMu.Unlock()
+	if len(p.tasks) == 0 && atomic.LoadInt32(&p.busy) == 0 {
+		if p.idleTick != nil {
+			p.idleTick.Stop()
+		}
+		p.idleTick = time.AfterFunc(3*time.Second, func() {
+			p.idleMu.Lock()
+			defer p.idleMu.Unlock()
+			if len(p.tasks) == 0 && atomic.LoadInt32(&p.busy) == 0 {
+				debug.FreeOSMemory()
+			}
+		})
+	}
+}
+
+var globalRPCWorkerPool = newRPCWorkerPool(2, 64)
+
+func handleGeneralRPCRequest(message webrtc.DataChannelMessage, session *Session) {
 	var request JSONRPCRequest
 	err := json.Unmarshal(message.Data, &request)
 	if err != nil {
@@ -455,16 +531,46 @@ func rpcSetVideoRc(params VideoRcConfigParams) error {
 	return err
 }
 
+var defaultVideoRcConfig = VideoRcConfigParams{
+	H264: RcQpParams{
+		S32FirstFrameStartQp:       0,
+		U32StepQp:                  48,
+		U32MinQp:                   48,
+		U32MaxQp:                   51,
+		U32MinIQp:                  48,
+		U32MaxIQp:                  51,
+		S32DeltIpQp:                7,
+		S32MaxReEncodeTimes:        2,
+		U32FrmMaxQp:                51,
+		U32FrmMinQp:                48,
+		U32FrmMinIQp:               51,
+		U32FrmMaxIQp:               48,
+		U32MotionStaticSwitchFrmQp: 50,
+	},
+	H265: RcQpParams{
+		S32FirstFrameStartQp:       0,
+		U32StepQp:                  48,
+		U32MinQp:                   48,
+		U32MaxQp:                   51,
+		U32MinIQp:                  48,
+		U32MaxIQp:                  51,
+		S32DeltIpQp:                7,
+		S32MaxReEncodeTimes:        2,
+		U32FrmMaxQp:                51,
+		U32FrmMinQp:                48,
+		U32FrmMinIQp:               51,
+		U32FrmMaxIQp:               48,
+		U32MotionStaticSwitchFrmQp: 50,
+	},
+}
+
 func rpcGetVideoRc() (VideoRcConfigParams, error) {
 	resp, err := CallCtrlAction("get_video_rc", nil)
-	if err != nil {
-		return VideoRcConfigParams{}, err
+	if err != nil || resp == nil || resp.Result == nil {
+		return defaultVideoRcConfig, nil
 	}
 
 	result := resp.Result
-	if result == nil {
-		return VideoRcConfigParams{}, errors.New("invalid response format")
-	}
 
 	h264Map, _ := result["h264"].(map[string]interface{})
 	h265Map, _ := result["h265"].(map[string]interface{})
@@ -749,6 +855,10 @@ func rpcSetBacklightSettings(params BacklightSettings) error {
 		return fmt.Errorf("offAfter must be a positive integer")
 	}
 
+	if blConfig.OffAfter > 0 && blConfig.DimAfter > blConfig.OffAfter {
+		blConfig.DimAfter = 0
+	}
+
 	config.DisplayMaxBrightness = blConfig.MaxBrightness
 	config.DisplayDimAfterSec = blConfig.DimAfter
 	config.DisplayOffAfterSec = blConfig.OffAfter
@@ -759,15 +869,8 @@ func rpcSetBacklightSettings(params BacklightSettings) error {
 
 	logger.Info().Int("max_brightness", config.DisplayMaxBrightness).Int("dim_after", config.DisplayDimAfterSec).Int("off_after", config.DisplayOffAfterSec).Msg("rpc: display: settings applied")
 
-	// If the device started up with auto-dim and/or auto-off set to zero, the display init
-	// method will not have started the tickers. So in case that has changed, attempt to start the tickers now.
-	startBacklightTickers()
-
-	// Wake the display after the settings are altered, this ensures the tickers
-	// are reset to the new settings, and will bring the display up to maxBrightness.
-	// Calling with force set to true, to ignore the current state of the display, and force
-	// it to reset the tickers.
-	wakeDisplay(true)
+	// Apply new backlight configuration without turning on the display if it is off.
+	reloadBacklightSettings()
 	return nil
 }
 

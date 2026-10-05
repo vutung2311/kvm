@@ -89,7 +89,7 @@ func CallCtrlAction(action string, params map[string]interface{}) (*CtrlResponse
 			)
 		}
 		return response, nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(1500 * time.Millisecond):
 		close(responseChan)
 		delete(ongoingRequests, ctrlAction.Seq)
 		return nil, ErrorfL(&scopedLogger, "timeout waiting for response", nil)
@@ -190,6 +190,13 @@ func handleCtrlClient(conn net.Conn) {
 
 	// Restore HDMI EDID if applicable
 	go restoreHdmiEdid()
+
+	// Ensure video streaming state matches current active sessions
+	if actionSessions > 0 || videoBroadcaster.count.Load() > 0 {
+		_ = writeCtrlAction("start_video")
+	} else {
+		_ = writeCtrlAction("stop_video")
+	}
 
 	readBuf := make([]byte, 4096)
 	for {

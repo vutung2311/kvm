@@ -5,7 +5,7 @@ import { isMobile } from "react-device-detect";
 
 import { TextAreaWithLabel } from "@components/TextArea";
 import { useJsonRpc } from "@/hooks/useJsonRpc";
-import { useSettingsStore } from "@/hooks/stores";
+import { useSettingsStore, useRTCStore } from "@/hooks/stores";
 import { SettingsItem, SettingsItemNew } from "@components/Settings/SettingsView";
 
 import notifications from "../../../notifications";
@@ -406,9 +406,14 @@ export default function SettingsVideoSide() {
         return;
       }
 
-      notifications.success(`Stream encodec type set to ${encodecType}`);
+      notifications.success(`Stream encodec type set to ${encodecType === "hevc" ? "H.265" : "H.264"}`);
       setStreamEncodecType(encodecType);
-      window.location.reload();
+      const reconnect = useRTCStore.getState().reconnectWebRTC;
+      if (reconnect) {
+        reconnect();
+      } else {
+        window.location.reload();
+      }
     });
   };
 

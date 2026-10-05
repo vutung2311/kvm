@@ -35,7 +35,7 @@ func init() {
 // Initialize event and Start procnteessing requests
 func newSseServer() (event *sseEvent) {
 	event = &sseEvent{
-		Message:       make(chan string),
+		Message:       make(chan string, 128),
 		NewClients:    make(chan chan string),
 		ClosedClients: make(chan chan string),
 		TotalClients:  make(map[chan string]bool),

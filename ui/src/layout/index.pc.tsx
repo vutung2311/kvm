@@ -359,6 +359,15 @@ export default function PCHome() {
     setConnectionFailed(false);
     setLoadingMessage("Connecting to device...");
 
+    const oldPc = useRTCStore.getState().peerConnection;
+    if (oldPc) {
+      try {
+        oldPc.close();
+      } catch (err) {
+        console.warn("[setupPeerConnection] Error closing old peer connection", err);
+      }
+    }
+
     let pc: RTCPeerConnection;
     try {
       console.log("[setupPeerConnection] Creating peer connection");
@@ -803,6 +812,12 @@ export default function PCHome() {
   useEffect(() => {
     setCurrentLang(language, language === 'en' ? enJSON : zhJSON);
   }, [language, setCurrentLang]);
+
+  const setReconnectWebRTC = useRTCStore(state => state.setReconnectWebRTC);
+  useEffect(() => {
+    setReconnectWebRTC(setupPeerConnection);
+    return () => setReconnectWebRTC(null);
+  }, [setupPeerConnection, setReconnectWebRTC]);
 
   return (
     <FeatureFlagProvider appVersion={appVersion}>

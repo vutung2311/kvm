@@ -60,6 +60,17 @@ func (u *UsbGadget) relMouseWriteHidFile(data []byte) error {
 	u.relMouseLock.Lock()
 	defer u.relMouseLock.Unlock()
 
+	if u.relMouseHidFile != nil {
+		if stat, err := u.relMouseHidFile.Stat(); err != nil {
+			u.relMouseHidFile.Close()
+			u.relMouseHidFile = nil
+		} else if currentStat, err := os.Stat("/dev/hidg2"); err == nil && !os.SameFile(stat, currentStat) {
+			u.log.Warn().Msg("/dev/hidg2 inode changed, reopening")
+			u.relMouseHidFile.Close()
+			u.relMouseHidFile = nil
+		}
+	}
+
 	if u.relMouseHidFile == nil {
 		var err error
 		u.relMouseHidFile, err = os.OpenFile("/dev/hidg2", os.O_RDWR, 0666)
@@ -80,7 +91,7 @@ func (u *UsbGadget) relMouseWriteHidFile(data []byte) error {
 		}
 	}
 
-	_, err := u.relMouseHidFile.Write(data)
+	_, err := u.writeWithTimeout(u.relMouseHidFile, data)
 	if err != nil {
 		u.logWithSupression("relMouseWriteHidFile", 100, u.log, err, "failed to write to hidg2")
 		u.relMouseHidFile.Close()

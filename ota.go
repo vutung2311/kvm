@@ -1326,13 +1326,10 @@ type OTAState struct {
 var otaState = OTAState{}
 
 func triggerOTAStateUpdate() {
-	go func() {
-		if currentSession == nil {
-			logger.Info().Msg("No active RPC session, skipping update state update")
-			return
-		}
-		writeJSONRPCEvent("otaState", otaState, currentSession)
-	}()
+	if currentSession == nil {
+		return
+	}
+	writeJSONRPCEvent("otaState", otaState, currentSession)
 }
 
 func cleanupUpdateTempFiles(logger *zerolog.Logger) {

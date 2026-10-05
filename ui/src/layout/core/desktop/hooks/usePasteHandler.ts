@@ -8,7 +8,7 @@ import notifications from "@/notifications";
 import { eventMatchesShortcut } from "@/utils/shortcuts";
 
 export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaElement>) => {
-  const [send] = useJsonRpc();
+  const [send, sendNotification] = useJsonRpc();
   const pasteShortcutEnabled = useSettingsStore(state => state.pasteShortcutEnabled);
   const pasteShortcut = useSettingsStore(state => state.pasteShortcut);
   const keyboardLayout = useSettingsStore(state => state.keyboardLayout);
@@ -19,6 +19,7 @@ export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaEl
   const setDisableVideoFocusTrap = useUiStore(state => state.setDisableVideoFocusTrap);
   const focusTrapPrevRef = useRef<boolean | null>(null);
   const focusTrapRestoreTimerRef = useRef<number | null>(null);
+  const isPastingRef = useRef(false);
 
   const log = useCallback((...args: unknown[]) => {
     if (!debugMode) return;
@@ -76,33 +77,37 @@ export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaEl
   }, [safeKeyboardLayout]);
 
   const sendTextViaHID = useCallback(async (t: string) => {
-    for (const ch of t) {
-      const mapping = chars[safeKeyboardLayout][ch];
-      if (!mapping || !mapping.key) continue;
-      const { key, shift, altRight, deadKey, accentKey } = mapping;
-      const keyz = [keys[key]];
-      const modz = [(shift ? modifiers["ShiftLeft"] : 0) | (altRight ? modifiers["AltRight"] : 0)];
-      if (deadKey) {
-        keyz.push(keys["Space"]);
-        modz.push(0);
+    // Release any lingering modifiers/keys before typing (e.g. Ctrl held down from Ctrl+V)
+    sendNotification("keyboardReport", { keys: [], modifier: 0 });
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+
+    try {
+      for (const ch of t) {
+        const mapping = chars[safeKeyboardLayout][ch];
+        if (!mapping || !mapping.key) continue;
+        const { key, shift, altRight, deadKey, accentKey } = mapping;
+        const keyz = [keys[key]];
+        const modz = [(shift ? modifiers["ShiftLeft"] : 0) | (altRight ? modifiers["AltRight"] : 0)];
+        if (deadKey) {
+          keyz.push(keys["Space"]);
+          modz.push(0);
+        }
+        if (accentKey) {
+          keyz.unshift(keys[accentKey.key as keyof typeof keys]);
+          modz.unshift(((accentKey.shift ? modifiers["ShiftLeft"] : 0) | (accentKey.altRight ? modifiers["AltRight"] : 0)));
+        }
+        for (const [index, kei] of keyz.entries()) {
+          sendNotification("keyboardReport", { keys: [kei], modifier: modz[index] });
+          await new Promise<void>(resolve => setTimeout(resolve, 12));
+          sendNotification("keyboardReport", { keys: [], modifier: 0 });
+          await new Promise<void>(resolve => setTimeout(resolve, 12));
+        }
       }
-      if (accentKey) {
-        keyz.unshift(keys[accentKey.key as keyof typeof keys]);
-        modz.unshift(((accentKey.shift ? modifiers["ShiftLeft"] : 0) | (accentKey.altRight ? modifiers["AltRight"] : 0)));
-      }
-      for (const [index, kei] of keyz.entries()) {
-        await new Promise<void>((resolve, reject) => {
-          send("keyboardReport", { keys: [kei], modifier: modz[index] }, params => {
-            if ("error" in params) return reject(params.error as unknown as Error);
-            send("keyboardReport", { keys: [], modifier: 0 }, params => {
-              if ("error" in params) return reject(params.error as unknown as Error);
-              resolve();
-            });
-          });
-        });
-      }
+    } finally {
+      // Ensure all keys are released even if interrupted or on error
+      sendNotification("keyboardReport", { keys: [], modifier: 0 });
     }
-  }, [send, safeKeyboardLayout]);
+  }, [sendNotification, safeKeyboardLayout]);
 
   const sendTextToRemote = useCallback(async (txt: string) => {
     if (!txt) return;
@@ -147,7 +152,7 @@ export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaEl
     const onKeyDownCapture = (e: KeyboardEvent) => {
       if (!pasteShortcutEnabled) return;
       if (!eventMatchesShortcut(e, pasteShortcut)) return;
-      if (isReinitializingGadget) return;
+      if (isReinitializingGadget || isPastingRef.current) return;
 
       const activeElement = document.activeElement as HTMLElement | null;
       const isEditable =
@@ -157,38 +162,51 @@ export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaEl
           || activeElement.isContentEditable);
       if (isEditable) return;
 
-      void (async () => {
-        const didChangeTrap = ensureFocusTrapPaused();
-        if (didChangeTrap) {
-          await new Promise<void>(resolve => setTimeout(resolve, 0));
-        }
-        if (navigator.clipboard?.readText) {
-          try {
-            const txt = await navigator.clipboard.readText();
-            log("clipboard.readText ok", { length: txt.length });
-            if (txt) {
-              e.preventDefault();
-              await sendTextToRemote(txt);
-              return;
-            }
-          } catch (err) {
-            log("clipboard.readText failed", err);
-          }
-        }
+      // Synchronously prevent default and stop propagation so browser doesn't execute native paste concurrently
+      e.preventDefault();
+      e.stopPropagation();
 
-        const el = pasteCaptureRef?.current;
-        if (!el) {
-          log("pasteCaptureRef missing");
-          return;
-        }
-        el.value = "";
-        el.focus();
-        const activeAfterFocus = document.activeElement as HTMLElement | null;
-        if (activeAfterFocus !== el) {
-          setTimeout(() => {
-            el.focus();
-            log("fallback refocus pasteCaptureRef", { activeTagAfterRefocus: (document.activeElement as HTMLElement | null)?.tagName });
-          }, 0);
+      void (async () => {
+        if (isPastingRef.current) return;
+        isPastingRef.current = true;
+        try {
+          const didChangeTrap = ensureFocusTrapPaused();
+          if (didChangeTrap) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+          }
+          if (navigator.clipboard?.readText) {
+            try {
+              const txt = await navigator.clipboard.readText();
+              log("clipboard.readText ok", { length: txt.length });
+              if (txt) {
+                await sendTextToRemote(txt);
+                return;
+              }
+            } catch (err) {
+              log("clipboard.readText failed, trying fallback textarea", err);
+            }
+          }
+
+          const el = pasteCaptureRef?.current;
+          if (!el) {
+            log("pasteCaptureRef missing");
+            return;
+          }
+          el.value = "";
+          // Allow fallback handleGlobalPaste to pick up native paste from textarea
+          isPastingRef.current = false;
+          el.focus();
+          const activeAfterFocus = document.activeElement as HTMLElement | null;
+          if (activeAfterFocus !== el) {
+            setTimeout(() => {
+              el.focus();
+              log("fallback refocus pasteCaptureRef", { activeTagAfterRefocus: (document.activeElement as HTMLElement | null)?.tagName });
+            }, 0);
+          }
+        } catch (err) {
+          log("paste execution error", err);
+        } finally {
+          isPastingRef.current = false;
         }
       })();
     };
@@ -200,14 +218,22 @@ export const usePasteHandler = (pasteCaptureRef?: React.RefObject<HTMLTextAreaEl
   }, [ensureFocusTrapPaused, isReinitializingGadget, log, pasteShortcutEnabled, pasteShortcut, pasteCaptureRef, safeKeyboardLayout, sendTextToRemote]);
 
   const handleGlobalPaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement> | ClipboardEvent) => {
-    if (!pasteShortcutEnabled) return;
+    if (!pasteShortcutEnabled || isPastingRef.current) return;
     e.preventDefault();
+    e.stopPropagation();
     
     const clipboardData = (e as React.ClipboardEvent).clipboardData || (e as ClipboardEvent).clipboardData;
     const txt = clipboardData?.getData("text") || "";
   
-    await sendTextToRemote(txt);
-  }, [log, pasteShortcutEnabled, safeKeyboardLayout, sendTextToRemote]);
+    if (txt) {
+      isPastingRef.current = true;
+      try {
+        await sendTextToRemote(txt);
+      } finally {
+        isPastingRef.current = false;
+      }
+    }
+  }, [pasteShortcutEnabled, sendTextToRemote]);
 
   return {
     handleGlobalPaste,

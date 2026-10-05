@@ -70,6 +70,17 @@ func (u *UsbGadget) absMouseWriteHidFile(data []byte) error {
 	u.absMouseLock.Lock()
 	defer u.absMouseLock.Unlock()
 
+	if u.absMouseHidFile != nil {
+		if stat, err := u.absMouseHidFile.Stat(); err != nil {
+			u.absMouseHidFile.Close()
+			u.absMouseHidFile = nil
+		} else if currentStat, err := os.Stat("/dev/hidg1"); err == nil && !os.SameFile(stat, currentStat) {
+			u.log.Warn().Msg("/dev/hidg1 inode changed, reopening")
+			u.absMouseHidFile.Close()
+			u.absMouseHidFile = nil
+		}
+	}
+
 	if u.absMouseHidFile == nil {
 		var err error
 		u.absMouseHidFile, err = os.OpenFile("/dev/hidg1", os.O_RDWR, 0666)
@@ -89,7 +100,7 @@ func (u *UsbGadget) absMouseWriteHidFile(data []byte) error {
 		}
 	}
 
-	_, err := u.absMouseHidFile.Write(data)
+	_, err := u.writeWithTimeout(u.absMouseHidFile, data)
 	if err != nil {
 		u.logWithSupression("absMouseWriteHidFile", 100, u.log, err, "failed to write to hidg1")
 		u.absMouseHidFile.Close()

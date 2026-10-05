@@ -281,11 +281,18 @@ func rpcLogoutZeroTier(networkID string) error {
 
 func rpcGetZeroTierSettings() (ZeroTierSettings, error) {
 	LoadConfig()
-	configNetworkID := fmt.Sprintf("%v", config.ZeroTierNetworkID)
+	configNetworkID := strings.TrimSpace(fmt.Sprintf("%v", config.ZeroTierNetworkID))
+	if configNetworkID == "<nil>" {
+		configNetworkID = ""
+	}
 	settings := ZeroTierSettings{
 		State:     "disconnected",
 		NetworkID: configNetworkID,
 		IP:        "",
+	}
+
+	if configNetworkID == "" {
+		return settings, nil
 	}
 
 	resp, err := CallVpnCtrlAction("get_zerotier_state", map[string]interface{}{
@@ -958,8 +965,8 @@ func rpcGetWireguardInfo() (string, error) {
 }
 
 func initVPN() {
-	waitVpnCtrlClientConnected()
 	go func() {
+		waitVpnCtrlClientConnected()
 		for {
 			if !networkState.IsOnline() {
 				vpnLogger.Warn().Msg("waiting for network to be online, will retry in 3 seconds")

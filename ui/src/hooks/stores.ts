@@ -189,11 +189,17 @@ interface RTCState {
 
   serialConsole: RTCDataChannel | null;
   setSerialConsole: (channel: RTCDataChannel | null) => void;
+
+  reconnectWebRTC: (() => void) | null;
+  setReconnectWebRTC: (fn: (() => void) | null) => void;
 }
 
 export const useRTCStore = create<RTCState>(set => ({
   peerConnection: null,
   setPeerConnection: pc => set({ peerConnection: pc }),
+
+  reconnectWebRTC: null,
+  setReconnectWebRTC: fn => set({ reconnectWebRTC: fn }),
 
   rpcDataChannel: null,
   setRpcDataChannel: channel => set({ rpcDataChannel: channel }),

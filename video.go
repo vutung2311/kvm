@@ -30,9 +30,9 @@ type VideoInputState struct {
 var lastVideoState VideoInputState
 
 func triggerVideoStateUpdate() {
-	go func() {
+	if currentSession != nil {
 		writeJSONRPCEvent("videoInputState", lastVideoState, currentSession)
-	}()
+	}
 }
 
 func HandleVideoStateMessage(event CtrlResponse) {
@@ -44,7 +44,7 @@ func HandleVideoStateMessage(event CtrlResponse) {
 	}
 	lastVideoState = videoState
 	triggerVideoStateUpdate()
-	requestDisplayUpdate(true)
+	requestDisplayUpdate()
 }
 
 func rpcGetVideoState() (VideoInputState, error) {

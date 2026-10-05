@@ -326,7 +326,7 @@ func (u *UsbGadget) configureUsbGadget(resetUsb bool) error {
 		Bool("reset_usb", resetUsb).
 		Msg("configuring USB gadget via transaction")
 
-	return u.WithTransaction(func() error {
+	err := u.WithTransaction(func() error {
 		u.log.Info().Msg("Transaction: Mounting configfs")
 		u.tx.MountConfigFS()
 
@@ -342,6 +342,10 @@ func (u *UsbGadget) configureUsbGadget(resetUsb bool) error {
 		}
 		return nil
 	})
+	if err == nil && resetUsb {
+		u.ResetHIDFiles()
+	}
+	return err
 }
 
 func (u *UsbGadget) VerifyMassStorage() error {

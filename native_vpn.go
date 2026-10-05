@@ -66,7 +66,7 @@ func CallVpnCtrlAction(action string, params map[string]interface{}) (*CtrlRespo
 			)
 		}
 		return response, nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(10 * time.Second):
 		vpnLock.Lock()
 		delete(vpnOngoingRequests, ctrlAction.Seq)
 		vpnLock.Unlock()

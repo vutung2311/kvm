@@ -36,10 +36,10 @@ func (w *logOutput) Write(p []byte) (n int, err error) {
 
 	// TODO: write to file or syslog
 	if sseServer != nil {
-		// use a goroutine to avoid blocking the Write method
-		go func() {
-			sseServer.Message <- string(p)
-		}()
+		select {
+		case sseServer.Message <- string(p):
+		default:
+		}
 	}
 	return len(p), nil
 }

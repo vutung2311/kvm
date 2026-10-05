@@ -219,12 +219,16 @@ export default function SettingsHardware() {
                 value={settings.backlightSettings.dim_after.toString()}
                 className={`${isMobile?"w-full":"h-[36px] w-[22%]"}`}
                 options={[
-                  { value: "0", label: "Never" },
-                  { value: "60", label: "1 Minute" },
-                  { value: "300", label: "5 Minutes" },
-                  { value: "600", label: "10 Minutes" },
-                  { value: "1800", label: "30 Minutes" },
-                  { value: "3600", label: "1 Hour" },
+                  { value: "0", label: $at("Never") },
+                  { value: "10", label: $at("10 Seconds") },
+                  { value: "15", label: $at("15 Seconds") },
+                  { value: "30", label: $at("30 Seconds") },
+                  { value: "60", label: $at("1 Minute") },
+                  { value: "120", label: $at("2 Minutes") },
+                  { value: "300", label: $at("5 Minutes") },
+                  { value: "600", label: $at("10 Minutes") },
+                  { value: "1800", label: $at("30 Minutes") },
+                  { value: "3600", label: $at("1 Hour") },
                 ]}
                 onChange={e => {
                   settings.backlightSettings.dim_after = parseInt(e);
@@ -240,11 +244,15 @@ export default function SettingsHardware() {
                 value={settings.backlightSettings.off_after.toString()}
                 className={`${isMobile?"w-full":"h-[36px] w-[22%]"}`}
                 options={[
-                  { value: "0", label: "Never" },
-                  { value: "300", label: "5 Minutes" },
-                  { value: "600", label: "10 Minutes" },
-                  { value: "1800", label: "30 Minutes" },
-                  { value: "3600", label: "1 Hour" },
+                  { value: "0", label: $at("Never") },
+                  { value: "15", label: $at("15 Seconds") },
+                  { value: "30", label: $at("30 Seconds") },
+                  { value: "60", label: $at("1 Minute") },
+                  { value: "120", label: $at("2 Minutes") },
+                  { value: "300", label: $at("5 Minutes") },
+                  { value: "600", label: $at("10 Minutes") },
+                  { value: "1800", label: $at("30 Minutes") },
+                  { value: "3600", label: $at("1 Hour") },
                 ]}
                 onChange={e => {
                   settings.backlightSettings.off_after = parseInt(e);
@@ -254,7 +262,7 @@ export default function SettingsHardware() {
             </SettingsItem>
           
             <p className="text-xs text-slate-600 dark:text-[#ffffff]">
-              {$at("The display will wake up when the connection state changes, or when touched.")}
+              {$at("The display will wake up when touched.")}
             </p>
 
           </>

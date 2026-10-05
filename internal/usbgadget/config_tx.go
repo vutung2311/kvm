@@ -416,4 +416,15 @@ func (tx *UsbGadgetTransaction) RebindUsb(ignoreUnbindError bool) {
 		Description:     "bind UDC",
 		DependsOn:       []string{unbindPath},
 	})
+
+	// Re-bind configfs UDC after DWC3 driver binds back to ensure the gadget is active
+	udcPath := path.Join(tx.kvmGadgetPath, "UDC")
+	tx.addFileChange("udc", RequestedFileChange{
+		Key:             "udc-rebind",
+		Path:            udcPath,
+		ExpectedState:   FileStateFileWrite,
+		ExpectedContent: []byte(tx.udc),
+		Description:     "bind configfs UDC",
+		DependsOn:       []string{bindPath},
+	})
 }

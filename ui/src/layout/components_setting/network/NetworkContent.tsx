@@ -42,12 +42,12 @@ const defaultNetworkSettings: NetworkSettings = {
   http_proxy: "",
   https_proxy: "",
   all_proxy: "",
-  ipv4_mode: "unknown",
-  ipv6_mode: "unknown",
-  lldp_mode: "unknown",
+  ipv4_mode: "dhcp",
+  ipv6_mode: "slaac",
+  lldp_mode: "basic",
   lldp_tx_tlvs: [],
-  mdns_mode: "unknown",
-  time_sync_mode: "unknown",
+  mdns_mode: "auto",
+  time_sync_mode: "ntp_and_http",
 };
 
 export function LifeTimeLabel({ lifetime }: { lifetime: string }) {
@@ -129,7 +129,10 @@ export default function SettingsNetwork() {
   const getNetworkSettings = useCallback(() => {
     setNetworkSettingsLoaded(false);
     send("getNetworkSettings", {}, resp => {
-      if ("error" in resp) return;
+      if ("error" in resp) {
+        setNetworkSettingsLoaded(true);
+        return;
+      }
       console.log(resp.result);
       setNetworkSettings(resp.result as NetworkSettings);
 
@@ -238,6 +241,10 @@ export default function SettingsNetwork() {
   useEffect(() => {
     getNetworkState();
     getNetworkSettings();
+    const safetyTimer = setTimeout(() => {
+      setNetworkSettingsLoaded(true);
+    }, 3500);
+    return () => clearTimeout(safetyTimer);
   }, [getNetworkState, getNetworkSettings]);
 
   useEffect(() => {

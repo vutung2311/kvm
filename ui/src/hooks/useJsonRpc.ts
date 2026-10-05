@@ -65,13 +65,67 @@ export function resetHttpSessionId() {
   httpSessionInvalidated = true;
 }
 
+function sendOverHttp(
+  payload: JsonRpcRequest,
+  callback?: (resp: JsonRpcResponse) => void,
+  onRequest?: (payload: JsonRpcRequest) => void,
+) {
+  fetch("/api/rpc", {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Session-ID': getHttpSessionId(),
+    },
+    body: JSON.stringify(payload)
+  })
+  .then(res => res.json())
+  .then((data: unknown) => {
+    const handleEvent = (event: JsonRpcRequest) => {
+      if (event.method === "refreshPage") {
+        const currentUrl = new URL(window.location.href);
+        currentUrl.searchParams.set("networkChanged", "true");
+        window.location.href = currentUrl.toString();
+        return;
+      }
+      if (onRequest) onRequest(event);
+    };
+
+    if (data && typeof data === "object" && ("response" in data || "event" in data)) {
+      const wrapper = data as { response: JsonRpcResponse; event?: JsonRpcRequest };
+      if (wrapper.event) {
+        handleEvent(wrapper.event);
+      }
+      if (callback) callback(wrapper.response);
+      return;
+    }
+
+    if (data && typeof data === "object" && "method" in data) {
+      handleEvent(data as JsonRpcRequest);
+      return;
+    }
+
+    if (callback) callback(data as JsonRpcResponse);
+  })
+  .catch(err => {
+    console.error("RPC over HTTP failed", err);
+    if (callback) {
+      callback({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "HTTP RPC failed", data: err.toString() },
+        id: payload.id ?? 0
+      });
+    }
+  });
+}
+
 export function useJsonRpc(onRequest?: (payload: JsonRpcRequest) => void) {
   const rpcDataChannel = useRTCStore(state => state.rpcDataChannel);
   const forceHttp = useSettingsStore(state => state.forceHttp);
 
   const send = useCallback(
     (method: string, params: unknown, callback?: (resp: JsonRpcResponse) => void) => {
-      if (forceHttp) {
+      const useHttp = forceHttp || !rpcDataChannel || rpcDataChannel.readyState !== "open";
+      if (useHttp) {
         if (httpSessionInvalidated) {
           requestCounter++;
           const payloadId = requestCounter;
@@ -85,73 +139,44 @@ export function useJsonRpc(onRequest?: (payload: JsonRpcRequest) => void) {
           return;
         }
         requestCounter++;
-        const payload = { jsonrpc: "2.0", method, params, id: requestCounter };
-
-        fetch("/api/rpc", {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Session-ID': getHttpSessionId(),
-          },
-          body: JSON.stringify(payload)
-        })
-        .then(res => res.json())
-        .then((data: unknown) => {
-          const handleEvent = (event: JsonRpcRequest) => {
-            if (event.method === "refreshPage") {
-              const currentUrl = new URL(window.location.href);
-              currentUrl.searchParams.set("networkChanged", "true");
-              window.location.href = currentUrl.toString();
-              return;
-            }
-            if (onRequest) onRequest(event);
-          };
-
-          if (data && typeof data === "object" && ("response" in data || "event" in data)) {
-            const wrapper = data as { response: JsonRpcResponse; event?: JsonRpcRequest };
-            if (wrapper.event) {
-              handleEvent(wrapper.event);
-            }
-            if (callback) callback(wrapper.response);
-            return;
-          }
-
-          if (data && typeof data === "object" && "method" in data) {
-            handleEvent(data as JsonRpcRequest);
-            return;
-          }
-
-          if (callback) callback(data as JsonRpcResponse);
-        })
-        .catch(err => {
-          console.error("RPC over HTTP failed", err);
-          if (callback) {
-            callback({
-              jsonrpc: "2.0",
-              error: { code: -32000, message: "HTTP RPC failed", data: err.toString() },
-              id: payload.id
-            });
-          }
-        });
+        const payload: JsonRpcRequest = { jsonrpc: "2.0", method, params: (params as object) || {}, id: requestCounter };
+        sendOverHttp(payload, callback, onRequest);
         return;
       }
 
-      if (rpcDataChannel?.readyState !== "open") return;
       requestCounter++;
-      const payload = { jsonrpc: "2.0", method, params, id: requestCounter };
-      // Store the callback if it exists
-      if (callback) callbackStore.set(payload.id, callback);
+      const payload: JsonRpcRequest = { jsonrpc: "2.0", method, params: (params as object) || {}, id: requestCounter };
+      if (callback) {
+        const reqId = payload.id!;
+        callbackStore.set(reqId, callback);
 
-      rpcDataChannel.send(JSON.stringify(payload));
+        setTimeout(() => {
+          if (callbackStore.has(reqId)) {
+            callbackStore.delete(reqId);
+            sendOverHttp(payload, callback, onRequest);
+          }
+        }, 3000);
+      }
+
+      try {
+        rpcDataChannel.send(JSON.stringify(payload));
+      } catch (err) {
+        console.warn("rpcDataChannel send failed, falling back to HTTP", err);
+        if (callback && callbackStore.has(payload.id!)) {
+          callbackStore.delete(payload.id!);
+          sendOverHttp(payload, callback, onRequest);
+        }
+      }
     },
     [rpcDataChannel, forceHttp, onRequest],
   );
 
   const sendNotification = useCallback(
     (method: string, params: unknown) => {
-      const payload = { jsonrpc: "2.0", method, params };
+      const payload: JsonRpcRequest = { jsonrpc: "2.0", method, params: (params as object) || {} };
+      const useHttp = forceHttp || !rpcDataChannel || rpcDataChannel.readyState !== "open";
 
-      if (forceHttp) {
+      if (useHttp) {
         fetch("/api/rpc", {
           method: "POST",
           headers: {
@@ -165,8 +190,18 @@ export function useJsonRpc(onRequest?: (payload: JsonRpcRequest) => void) {
         return;
       }
 
-      if (rpcDataChannel?.readyState !== "open") return;
-      rpcDataChannel.send(JSON.stringify(payload));
+      try {
+        rpcDataChannel.send(JSON.stringify(payload));
+      } catch {
+        fetch("/api/rpc", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-ID": getHttpSessionId(),
+          },
+          body: JSON.stringify(payload),
+        }).catch(() => {});
+      }
     },
     [rpcDataChannel, forceHttp],
   );

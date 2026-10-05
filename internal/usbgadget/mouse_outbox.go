@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	mouseStaleAfter = time.Second
-	mouseOutboxMax  = 64
+	mouseStaleAfter = 100 * time.Millisecond
+	mouseOutboxMax  = 32
 )
 
 type mouseEntryKind uint8
@@ -219,6 +219,11 @@ func (o *mouseOutbox) flush(u *UsbGadget) error {
 
 		switch e.kind {
 		case mouseEntryAbs:
+			// Coalesce consecutive abs mouse entries with identical buttons
+			for len(o.entries) > 1 && o.entries[1].kind == mouseEntryAbs && o.entries[1].buttons == e.buttons {
+				o.pop()
+				e = &o.entries[0]
+			}
 			var report [6]byte
 			report[0] = 1 // Report ID 1
 			report[1] = e.buttons
@@ -239,8 +244,8 @@ func (o *mouseOutbox) flush(u *UsbGadget) error {
 		}
 
 		if err != nil {
+			o.pop()
 			if errors.Is(err, fs.ErrNotExist) {
-				o.pop()
 				continue
 			}
 			return err

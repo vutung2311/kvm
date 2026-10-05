@@ -79,6 +79,22 @@ func (u *UsbGadget) startWriters() {
 	})
 }
 
+// InitTestInboxes initializes inboxes with a no-op drainer for benchmarks and unit tests.
+func (u *UsbGadget) InitTestInboxes() {
+	u.writersOnce.Do(func() {
+		u.kbInbox = make(chan hidMsg, inboxSize)
+		u.mouseInbox = make(chan hidMsg, inboxSize)
+		go func() {
+			for range u.kbInbox {
+			}
+		}()
+		go func() {
+			for range u.mouseInbox {
+			}
+		}()
+	})
+}
+
 // runWriter is the per-device delivery loop. It returns when inbox is closed.
 func (u *UsbGadget) runWriter(inbox <-chan hidMsg, ob outbox) {
 	backoff := writerRetryMin

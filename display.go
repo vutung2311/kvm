@@ -12,8 +12,9 @@ var currentScreen = "ui_Boot_Screen"
 var backlightState = 0 // 0 - NORMAL, 1 - DIMMED, 2 - OFF
 
 var (
-	dimTicker *time.Ticker
-	offTicker *time.Ticker
+	backlightLock sync.Mutex
+	dimTimer      *time.Timer
+	offTimer      *time.Timer
 )
 
 const (
@@ -132,7 +133,7 @@ var (
 	waitDisplayUpdate = sync.Mutex{}
 )
 
-func requestDisplayUpdate(shouldWakeDisplay bool) {
+func requestDisplayUpdate() {
 	displayUpdateLock.Lock()
 	defer displayUpdateLock.Unlock()
 
@@ -141,21 +142,18 @@ func requestDisplayUpdate(shouldWakeDisplay bool) {
 		return
 	}
 	go func() {
-		if shouldWakeDisplay {
-			wakeDisplay(false)
-		}
 		displayLogger.Debug().Msg("display updating")
 		//TODO: only run once regardless how many pending updates
 		updateDisplay()
 	}()
 }
 
-func waitCtrlAndRequestDisplayUpdate(shouldWakeDisplay bool) {
+func waitCtrlAndRequestDisplayUpdate() {
 	waitDisplayUpdate.Lock()
 	defer waitDisplayUpdate.Unlock()
 
 	waitDisplayCtrlClientConnected()
-	requestDisplayUpdate(shouldWakeDisplay)
+	requestDisplayUpdate()
 }
 
 func updateStaticContents() {
@@ -170,10 +168,8 @@ func updateStaticContents() {
 // setDisplayBrightness sets /sys/class/backlight/backlight/brightness to alter
 // the backlight brightness of the KVM hardware's display.
 func setDisplayBrightness(brightness int) error {
-	// NOTE: The actual maximum value for this is 255, but out-of-the-box, the value is set to 64.
-	// The maximum set here is set to 100 to reduce the risk of drawing too much power (and besides, 255 is very bright!).
-	if brightness > 200 || brightness < 0 {
-		return errors.New("brightness value out of bounds, must be between 0 and 100")
+	if brightness > 255 || brightness < 0 {
+		return errors.New("brightness value out of bounds, must be between 0 and 255")
 	}
 
 	// Check the display backlight class is available
@@ -192,132 +188,172 @@ func setDisplayBrightness(brightness int) error {
 	return nil
 }
 
-// tick_displayDim() is called when when dim ticker expires, it simply reduces the brightness
-// of the display by half of the max brightness.
-func tick_displayDim() {
-	err := setDisplayBrightness(config.DisplayMaxBrightness / 2)
-	if err != nil {
-		displayLogger.Warn().Err(err).Msg("failed to dim display")
+func onDimTimer() {
+	backlightLock.Lock()
+	defer backlightLock.Unlock()
+
+	// Only dim if currently normal (state 0) and not turned off in config
+	if backlightState != 0 || config.DisplayMaxBrightness == 0 {
+		return
 	}
 
-	dimTicker.Stop()
+	dimBrightness := config.DisplayMaxBrightness / 2
+	err := setDisplayBrightness(dimBrightness)
+	if err != nil {
+		displayLogger.Warn().Err(err).Msg("failed to dim display")
+	} else {
+		displayLogger.Info().Int("brightness", dimBrightness).Msg("display dimmed due to inactivity")
+	}
 
 	backlightState = 1
+	dimTimer = nil
 }
 
-// tick_displayOff() is called when the off ticker expires, it turns off the display
-// by setting the brightness to zero.
-func tick_displayOff() {
+func onOffTimer() {
+	backlightLock.Lock()
+	defer backlightLock.Unlock()
+
+	// Only turn off if not already off
+	if backlightState == 2 || config.DisplayMaxBrightness == 0 {
+		return
+	}
+
 	err := setDisplayBrightness(0)
 	if err != nil {
 		displayLogger.Warn().Err(err).Msg("failed to turn off display")
+	} else {
+		displayLogger.Info().Msg("display turned off due to inactivity")
 	}
-
-	offTicker.Stop()
 
 	backlightState = 2
+	offTimer = nil
 }
 
-// wakeDisplay sets the display brightness back to config.DisplayMaxBrightness and stores the time the display
-// last woke, ready for displayTimeoutTick to put the display back in the dim/off states.
-// Set force to true to skip the backlight state check, this should be done if altering the tickers.
-func wakeDisplay(force bool) {
-	if backlightState == 0 && !force {
-		return
+func resetBacklightTimersLocked() {
+	if dimTimer != nil {
+		dimTimer.Stop()
+		dimTimer = nil
+	}
+	if offTimer != nil {
+		offTimer.Stop()
+		offTimer = nil
 	}
 
-	// Don't try to wake up if the display is turned off.
 	if config.DisplayMaxBrightness == 0 {
 		return
 	}
 
-	err := setDisplayBrightness(config.DisplayMaxBrightness)
-	if err != nil {
-		displayLogger.Warn().Err(err).Msg("failed to wake display")
+	if config.DisplayDimAfterSec > 0 {
+		dimTimer = time.AfterFunc(time.Duration(config.DisplayDimAfterSec)*time.Second, onDimTimer)
 	}
 
-	if config.DisplayDimAfterSec != 0 {
-		dimTicker.Reset(time.Duration(config.DisplayDimAfterSec) * time.Second)
-	}
-
-	if config.DisplayOffAfterSec != 0 {
-		offTicker.Reset(time.Duration(config.DisplayOffAfterSec) * time.Second)
-	}
-	backlightState = 0
-}
-
-// watchTsEvents monitors the touchscreen for events and simply calls wakeDisplay() to ensure the
-// touchscreen interface still works even with LCD dimming/off.
-func watchTsEvents() {
-	ts, err := os.OpenFile(touchscreenDevice, os.O_RDONLY, 0666)
-	if err != nil {
-		displayLogger.Warn().Err(err).Msg("failed to open touchscreen device")
-		return
-	}
-
-	defer ts.Close()
-
-	// This buffer is set to 24 bytes as that's the normal size of events on /dev/input
-	// Reference: https://www.kernel.org/doc/Documentation/input/input.txt
-	// This could potentially be set higher, to require multiple events to wake the display.
-	buf := make([]byte, 24)
-	for {
-		_, err := ts.Read(buf)
-		if err != nil {
-			displayLogger.Warn().Err(err).Msg("failed to read from touchscreen device")
-			return
-		}
-
-		wakeDisplay(false)
+	if config.DisplayOffAfterSec > 0 {
+		offTimer = time.AfterFunc(time.Duration(config.DisplayOffAfterSec)*time.Second, onOffTimer)
 	}
 }
 
-// startBacklightTickers starts the two tickers for dimming and switching off the display
-// if they're not already set. This is done separately to the init routine as the "never dim"
-// option has the value set to zero, but time.NewTicker only accept positive values.
-func startBacklightTickers() {
-	// Don't start the tickers if the display is switched off.
-	// Set the display to off if that's the case.
+// wakeDisplay restores display brightness to config.DisplayMaxBrightness and resets
+// the dim and screen-off inactivity timers.
+func wakeDisplay(force bool) {
+	backlightLock.Lock()
+	defer backlightLock.Unlock()
+
+	displayLogger.Info().Bool("force", force).Int("prevState", backlightState).Msg("wakeDisplay")
+
+	// If max brightness is 0, display is configured to be permanently off
 	if config.DisplayMaxBrightness == 0 {
 		_ = setDisplayBrightness(0)
+		backlightState = 2
+		if dimTimer != nil {
+			dimTimer.Stop()
+			dimTimer = nil
+		}
+		if offTimer != nil {
+			offTimer.Stop()
+			offTimer = nil
+		}
 		return
 	}
 
-	// Stop existing tickers to prevent multiple active instances on repeated calls
-	if dimTicker != nil {
-		dimTicker.Stop()
+	// Restore brightness if dimmed or off, or if explicitly forced
+	if backlightState != 0 || force {
+		err := setDisplayBrightness(config.DisplayMaxBrightness)
+		if err != nil {
+			displayLogger.Warn().Err(err).Msg("failed to wake display")
+		}
+		backlightState = 0
 	}
 
-	if offTicker != nil {
-		offTicker.Stop()
-	}
+	// Always restart inactivity timers on touch or wake event
+	resetBacklightTimersLocked()
+}
 
-	if config.DisplayDimAfterSec != 0 {
-		displayLogger.Info().Msg("dim_ticker has started")
-		dimTicker = time.NewTicker(time.Duration(config.DisplayDimAfterSec) * time.Second)
+// watchTsEvents monitors the touchscreen for events and calls wakeDisplay() to ensure the
+// touchscreen interface wakes or keeps the display active.
+func watchTsEvents() {
+	buf := make([]byte, 24)
+	for {
+		ts, err := os.OpenFile(touchscreenDevice, os.O_RDONLY, 0666)
+		if err != nil {
+			displayLogger.Warn().Err(err).Msg("failed to open touchscreen device, will retry")
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-		go func() {
-			for { //nolint:staticcheck
-				select {
-				case <-dimTicker.C:
-					tick_displayDim()
-				}
+		for {
+			_, err := ts.Read(buf)
+			if err != nil {
+				displayLogger.Warn().Err(err).Msg("failed to read from touchscreen device, reconnecting")
+				break
 			}
-		}()
+
+			wakeDisplay(false)
+		}
+
+		_ = ts.Close()
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// reloadBacklightSettings applies updated backlight configuration without turning on the screen if it is off.
+func reloadBacklightSettings() {
+	backlightLock.Lock()
+	defer backlightLock.Unlock()
+
+	// If max brightness is 0, display is permanently turned off
+	if config.DisplayMaxBrightness == 0 {
+		_ = setDisplayBrightness(0)
+		backlightState = 2
+		if dimTimer != nil {
+			dimTimer.Stop()
+			dimTimer = nil
+		}
+		if offTimer != nil {
+			offTimer.Stop()
+			offTimer = nil
+		}
+		return
 	}
 
-	if config.DisplayOffAfterSec != 0 {
-		displayLogger.Info().Msg("off_ticker has started")
-		offTicker = time.NewTicker(time.Duration(config.DisplayOffAfterSec) * time.Second)
+	// If the display has turned off due to inactivity, keep it off! Only physical touch should turn it on.
+	if backlightState == 2 {
+		displayLogger.Info().Msg("backlight settings updated while display is off; remaining off until touched")
+		return
+	}
 
-		go func() {
-			for { //nolint:staticcheck
-				select {
-				case <-offTicker.C:
-					tick_displayOff()
-				}
-			}
-		}()
+	// If currently dimmed, update to half of new max brightness
+	if backlightState == 1 {
+		dimBrightness := config.DisplayMaxBrightness / 2
+		_ = setDisplayBrightness(dimBrightness)
+		resetBacklightTimersLocked()
+		return
+	}
+
+	// If currently normal (on), update to new max brightness and reset timers
+	if backlightState == 0 {
+		_ = setDisplayBrightness(config.DisplayMaxBrightness)
+		resetBacklightTimersLocked()
+		return
 	}
 }
 
@@ -331,9 +367,8 @@ func initDisplay() {
 		initTimeZone()
 		displayInited = true
 		displayLogger.Info().Msg("display inited")
-		startBacklightTickers()
 		wakeDisplay(true)
-		requestDisplayUpdate(true)
+		requestDisplayUpdate()
 	}()
 
 	go watchTsEvents()

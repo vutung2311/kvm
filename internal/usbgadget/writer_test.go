@@ -1,6 +1,7 @@
 package usbgadget
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -115,6 +116,71 @@ func TestKeyboardOutboxDeduplication(t *testing.T) {
 	}
 }
 
+func TestKeyboardOutboxCollapseEnsuresRelease(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+
+	ob := &keyboardOutbox{now: clk}
+
+	// Press key 'A'
+	var m1 hidMsg
+	m1.kind = hidMsgKeyboard
+	m1.data = [8]byte{0, 0, 0x04, 0, 0, 0, 0, 0}
+	ob.add(m1)
+
+	// Simulate filling outbox to max
+	for i := 1; i < keyboardOutboxMax; i++ {
+		var m hidMsg
+		m.kind = hidMsgKeyboard
+		m.data = [8]byte{0, 0, byte(i % 50), 0, 0, 0, 0, 0}
+		ob.add(m)
+	}
+
+	// Next add should trigger collapse
+	var mOver hidMsg
+	mOver.kind = hidMsgKeyboard
+	mOver.data = [8]byte{0, 0, 0x05, 0, 0, 0, 0, 0}
+	ob.add(mOver)
+
+	// Collapse should have emitted an all-zero release report, plus the newly added report
+	if len(ob.entries) != 2 {
+		t.Fatalf("expected 2 entries after collapse, got %d", len(ob.entries))
+	}
+	var zero [keyboardReportLen]byte
+	if ob.entries[0].report != zero {
+		t.Fatalf("expected first entry after collapse to be zero release report, got %v", ob.entries[0].report)
+	}
+	if ob.entries[1].report[2] != 0x05 {
+		t.Fatalf("expected second entry to be new report 0x05, got %v", ob.entries[1].report)
+	}
+}
+
+func TestKeyboardOutboxStaleDrop(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+
+	ob := &keyboardOutbox{now: clk}
+
+	// Press key 'A'
+	var m1 hidMsg
+	m1.kind = hidMsgKeyboard
+	m1.data = [8]byte{0, 0, 0x04, 0, 0, 0, 0, 0}
+	ob.add(m1)
+
+	// Advance time past keyboardStaleAfter
+	now = now.Add(keyboardStaleAfter + time.Second)
+	ob.dropStale()
+
+	// Should drop stale report and replace with an all-zero release report
+	if len(ob.entries) != 1 {
+		t.Fatalf("expected 1 entry (all-zero release), got %d", len(ob.entries))
+	}
+	var zero [keyboardReportLen]byte
+	if ob.entries[0].report != zero {
+		t.Fatalf("expected zero release report on stale drop, got %v", ob.entries[0].report)
+	}
+}
+
 func TestMouseOutboxStaleDrop(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
@@ -137,5 +203,94 @@ func TestMouseOutboxStaleDrop(t *testing.T) {
 	}
 	if ob.entries[0].buttons != 1 {
 		t.Fatalf("expected buttons=1 preserved on stale collapse, got %d", ob.entries[0].buttons)
+	}
+}
+
+func BenchmarkMouseOutboxAddAbsolute(b *testing.B) {
+	now := time.Now()
+	ob := &mouseOutbox{
+		entries: make([]mouseEntry, 0, mouseOutboxMax),
+		now:     func() time.Time { return now },
+	}
+	var msg hidMsg
+	msg.kind = hidMsgAbsMouse
+	msg.data = [8]byte{1, 0, 10, 0, 20, 0, 0, 0}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ob.add(msg)
+	}
+}
+
+func BenchmarkMouseOutboxAddRelative(b *testing.B) {
+	now := time.Now()
+	ob := &mouseOutbox{
+		entries: make([]mouseEntry, 0, mouseOutboxMax),
+		now:     func() time.Time { return now },
+	}
+	var msg hidMsg
+	msg.kind = hidMsgRelMouse
+	msg.data = [8]byte{0, 5, 10, 1, 0, 0, 0, 0}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ob.add(msg)
+	}
+}
+
+func BenchmarkKeyboardOutboxAdd(b *testing.B) {
+	now := time.Now()
+	ob := &keyboardOutbox{
+		entries: make([]kbEntry, 0, keyboardOutboxMax),
+		now:     func() time.Time { return now },
+	}
+	var msg hidMsg
+	msg.kind = hidMsgKeyboard
+	msg.data = [8]byte{0, 0, 0x04, 0, 0, 0, 0, 0}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ob.add(msg)
+	}
+}
+
+func TestKeyboardOutboxPopOnError(t *testing.T) {
+	ob := newKeyboardOutbox()
+	done := make(chan error, 1)
+	ob.append([8]byte{0, 0, 4, 0, 0, 0, 0, 0}, done)
+	if len(ob.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(ob.entries))
+	}
+	testErr := errors.New("write failed")
+	ob.pop(testErr)
+	if len(ob.entries) != 0 {
+		t.Fatalf("expected 0 entries after pop, got %d", len(ob.entries))
+	}
+	select {
+	case err := <-done:
+		if err != testErr {
+			t.Fatalf("expected testErr, got %v", err)
+		}
+	default:
+		t.Fatal("expected done to be signaled with error")
+	}
+}
+
+func TestMouseOutboxPopOnError(t *testing.T) {
+	ob := newMouseOutbox()
+	ob.appendEntry(mouseEntry{
+		kind: mouseEntryAbs,
+		x:    100,
+		y:    200,
+	}, time.Now())
+	if len(ob.entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(ob.entries))
+	}
+	ob.pop()
+	if len(ob.entries) != 0 {
+		t.Fatalf("expected 0 entries after pop, got %d", len(ob.entries))
 	}
 }
